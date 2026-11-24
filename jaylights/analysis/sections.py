@@ -99,83 +99,167 @@ def _slope(y: np.ndarray) -> float:
     return float(np.polyfit(x, y, 1)[0])
 
 
-def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
-    segs = _segment(m)
-    if not segs:
-        return []
-    kick = m["kick"]
-    lo, hi = np.percentile(kick, [15, 90])
-    kick_thr = (lo + hi) / 2 if hi - lo > 0.2 else -1.0  # kick all the way through? then all bars count
+def _split_threshold(x: np.ndarray, min_gap: float = 0.15):
+    """Otsu split of per-bar values into two groups. None if they aren't clearly two groups."""
+    v = np.sort(x)
+    if len(v) < 4:
+        return None
+    best, thr = -1.0, None
+    for i in range(1, len(v)):
+        a, b = v[:i], v[i:]
+        between = len(a) * len(b) * (a.mean() - b.mean()) ** 2
+        if between > best:
+            best, thr = between, (v[i - 1] + v[i]) / 2
+            gap = b.mean() - a.mean()
+    lo, hi = v[v <= thr], v[v > thr]
+    if len(lo) == 0 or len(hi) == 0 or hi.mean() - lo.mean() < min_gap:
+        return None
+    return thr
 
-    info = []
-    for a, b in segs:
-        info.append({
-            "a": a, "b": b,
-            "kick": float(np.mean(kick[a:b] > kick_thr)) > 0.5,
-            "energy": float(m["energy"][a:b].mean() + 0.5 * m["low"][a:b].mean()),
-        })
-    kick_e = [s["energy"] for s in info if s["kick"]]
-    top = max(kick_e) if kick_e else 1.0
-    for i, s in enumerate(info):
-        if s["kick"]:
-            # drops come right after a build/breakdown. A loud kick section without
-            # one has to be clearly the loudest thing in the track to count.
-            after_break = i > 0 and not info[i - 1]["kick"]
-            s["kind"] = DROP if s["energy"] >= top - (0.2 if after_break else 0.05) else GROOVE
-        else:
-            s["kind"] = BREAKDOWN
 
-    # merge neighbours with the same label, so a breakdown split in two is one run
+def _runs(flags: np.ndarray, min_len: int = 2) -> list[list]:
+    """[start, end, flag] runs; runs shorter than min_len bars get absorbed by a neighbour."""
     runs = []
-    for s in info:
-        if runs and runs[-1]["kind"] == s["kind"]:
-            r = runs[-1]
-            w0, w1 = r["b"] - r["a"], s["b"] - s["a"]
-            r["energy"] = (r["energy"] * w0 + s["energy"] * w1) / (w0 + w1)
-            r["b"] = s["b"]
+    for i, f in enumerate(flags):
+        if runs and runs[-1][2] == f:
+            runs[-1][1] = i + 1
         else:
-            runs.append(dict(s))
-    info = runs
+            runs.append([i, i + 1, bool(f)])
+    changed = True
+    while changed and len(runs) > 1:
+        changed = False
+        for i, r in enumerate(runs):
+            # keep a 1-bar empty gap between two full runs: the silence right before a drop
+            pre_drop_gap = (not r[2] and 0 < i < len(runs) - 1 and runs[i + 1][1] - runs[i + 1][0] >= 4)
+            if r[1] - r[0] < min_len and not pre_drop_gap:
+                j = i - 1 if i > 0 else i + 1
+                runs[j][0], runs[j][1] = min(runs[j][0], r[0]), max(runs[j][1], r[1])
+                del runs[i]
+                merged = []
+                for q in runs:  # re-merge neighbours with the same flag
+                    if merged and merged[-1][2] == q[2]:
+                        merged[-1][1] = q[1]
+                    else:
+                        merged.append(q)
+                runs = merged
+                changed = True
+                break
+    return runs
 
-    # carve builds out of whatever comes right before each drop
+
+def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
+    """Label bars by whether the floor is shaking.
+
+    The most reliable "is this a drop?" signal across house, dubstep, trap and DnB is
+    sub-bass level (35-120 Hz): drops are full, breakdowns and builds aren't. A kick
+    detector gets fooled by wobble basses, 808 tails and heavy limiting; the sub level
+    doesn't. So:
+      1. bars are FULL or EMPTY by a per-track threshold on sub level
+      2. a full stretch right after an empty one is a DROP (all of it - no stripes)
+      3. the end of an empty stretch where tension (hats, risers, snare rolls) climbs
+         is the BUILD; the rest is a BREAKDOWN
+      4. a big energy jump inside a full stretch also counts as a drop (builds where
+         the kick never stops), and a clear step down at the end is the OUTRO
+    """
+    low = m["low"]
+    n = len(low)
+    if n == 0:
+        return []
+    # FULL = within reach of drop-level sub. Intros and builds often keep a soft kick,
+    # so "louder than the breakdown" isn't enough: it has to be near the loudest bars.
+    p90, p10 = np.percentile(low, [90, 10])
+    thr = p90 - 0.15 if p90 - p10 > 0.15 else None
+    full = low > thr if thr is not None else np.ones(n, bool)
+    power = m["energy"] + 0.5 * m["low"] + 0.5 * m["high"]
+    tension = m["tension"] + 0.5 * m["density"]
+
+    # split full runs at big upward energy jumps (kick-through builds -> drop)
+    pieces = []  # [a, b, full, jumped_in]
+    for a, b, f in _runs(full):
+        cuts = [a]
+        if f and b - a >= 12:
+            for c in range(a + 4, b - 3, PHRASE):
+                before = power[max(cuts[-1], c - 8):c].mean()
+                after = power[c:min(b, c + 8)].mean()
+                if after - before > 0.2:
+                    cuts.append(c)
+        cuts.append(b)
+        for i, (x, y) in enumerate(zip(cuts[:-1], cuts[1:])):
+            pieces.append([x, y, f, i > 0])
+
+    full_power = [power[a:b].mean() for a, b, f, _ in pieces if f]
+    top = max(full_power) if full_power else 1.0
+    kinds = []
+    for i, (a, b, f, jumped) in enumerate(pieces):
+        if not f:
+            kinds.append(BREAKDOWN)
+            continue
+        after_gap = i > 0 and (not pieces[i - 1][2] or jumped)
+        # right after the intro, a full section is usually the groove; it only counts as
+        # a drop if it's as big as the biggest part of the track
+        margin = 0.08 if i == 1 else 0.2
+        kinds.append(DROP if after_gap and power[a:b].mean() >= top - margin else GROOVE)
+
     out: list[Section] = []
-    for i, s in enumerate(info):
-        nxt = info[i + 1] if i + 1 < len(info) else None
-        a, b, kind = s["a"], s["b"], s["kind"]
-        if nxt and nxt["kind"] == DROP and kind != DROP:
-            tension = m["tension"][a:b] + 0.5 * m["density"][a:b]
-            length = b - a
-            if not s["kick"]:
-                if length <= 8:
-                    build_start = a
-                else:
-                    # build starts after the last bar where tension is still near its
-                    # floor, measured back from the drop in whole phrases
-                    search = tension[: length - PHRASE]
-                    floor = search.min() + 0.25 * (tension.max() - search.min())
-                    last_calm = int(np.flatnonzero(search <= floor)[-1])
-                    blen = int(np.clip(round((length - last_calm - 1) / PHRASE) * PHRASE, PHRASE, 16))
-                    build_start = b - blen
-            else:
-                tail = min(8, length)
-                rising = _slope(tension[-tail:]) > 0.02
-                build_start = b - tail if rising else b
-            if build_start > a:
-                out.append(Section(kind, a, build_start))
-            if build_start < b:
-                out.append(Section(BUILD, build_start, b))
-        else:
+    for i, ((a, b, f, _), kind) in enumerate(zip(pieces, kinds)):
+        nxt = kinds[i + 1] if i + 1 < len(kinds) else None
+        if nxt != DROP or kind == DROP:
             out.append(Section(kind, a, b))
+            continue
+        # look back from the drop over this piece (and the one before, if it isn't a
+        # drop): builds often start while the kick is still going
+        lo = a
+        if out and out[-1].kind != DROP:
+            lo = out[-1].start_bar
+        t = tension[a:b]
+        length = b - a
+        if not f and length <= 8 and _slope(t) >= 0:
+            blen = length
+        else:
+            search = t[:-2] if length > 4 else t
+            floor = search.min() + 0.25 * (t.max() - search.min())
+            calm = np.flatnonzero(search <= floor)
+            last_calm = int(calm[-1]) if len(calm) else 0
+            blen = length - last_calm - 1
+            if f and _slope(t[-min(8, length):]) <= 0.01:
+                blen = 0  # kick section that doesn't build up: no build
+        if blen > 0:
+            # builds are whole phrases counted back from the drop. A 5-bar fade means the
+            # build really started 3 bars earlier, with the kick still going.
+            blen = int(np.clip(np.ceil(blen / PHRASE) * PHRASE, PHRASE, 32))
+        start = max(lo, b - blen)
+        # trim whatever we're eating into
+        while out and out[-1].start_bar >= start and out[-1].kind != DROP:
+            out.pop()
+        if out and out[-1].end_bar > start and out[-1].kind != DROP:
+            out[-1].end_bar = start
+        elif out and out[-1].end_bar > start:
+            start = out[-1].end_bar
+        if start > a and (not out or out[-1].end_bar < a):
+            out.append(Section(kind, a, start))
+        elif start > a:
+            out.append(Section(kind, max(a, out[-1].end_bar), start))
+        if start < b:
+            out.append(Section(BUILD, start, b))
 
-    # intro / outro
-    if out and out[0].kind in (GROOVE, BREAKDOWN):
-        out[0].kind = INTRO
+    # outro: a clear, lasting step down in energy at the end of the last drop
     last_drop = max((i for i, s in enumerate(out) if s.kind == DROP), default=None)
     if last_drop is not None:
+        d = out[last_drop]
+        best_c, best_gain = None, 0.12
+        for c in range(d.start_bar + 8, d.end_bar - 3, PHRASE):
+            gain = power[d.start_bar:c].mean() - power[c:d.end_bar].mean()
+            if gain > best_gain:
+                best_c, best_gain = c, gain
+        if best_c is not None:
+            out.insert(last_drop + 1, Section(OUTRO, best_c, d.end_bar))
+            d.end_bar = best_c
         n_bars = out[-1].end_bar
         for s in out[last_drop + 1:]:
             if s.kind in (GROOVE, BREAKDOWN) and s.start_bar >= 0.75 * n_bars:
                 s.kind = OUTRO
+    if out and out[0].kind in (GROOVE, BREAKDOWN):
+        out[0].kind = INTRO
 
     merged: list[Section] = []
     for s in out:

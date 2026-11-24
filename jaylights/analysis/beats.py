@@ -53,7 +53,38 @@ def estimate_tempo(env: np.ndarray, frame_rate: float, bpm_range=(90.0, 190.0), 
         denom = a - 2 * b + c
         if abs(denom) > 1e-12:
             lag += 0.5 * (a - c) / denom
-    return 60 * frame_rate / lag
+    return _rerank_ratios(acf, frame_rate, 60 * frame_rate / lag, bpm_range)
+
+
+def _acf_at(acf: np.ndarray, lag: float) -> float:
+    i = int(lag)
+    if i + 1 >= len(acf):
+        return 0.0
+    f = lag - i
+    return float(acf[i] * (1 - f) + acf[i + 1] * f)
+
+
+def _rerank_ratios(acf: np.ndarray, frame_rate: float, bpm: float, bpm_range) -> float:
+    """Syncopated beats (trap 808s, dubstep "kick on 1 and the and of 2", DnB breaks)
+    repeat every 1.5 beats or so, which fools a beat-level autocorrelation into 2/3 or
+    3/4 tempo. What they can't fake is the BAR: the whole pattern repeats every 4 beats.
+    So among tempos related by simple ratios, pick the one whose 1-, 2- and 4-bar
+    periods line up best."""
+    n = len(acf)
+    cands = [bpm * r for r in (1 / 2, 2 / 3, 3 / 4, 4 / 5, 1, 5 / 4, 4 / 3, 3 / 2, 2)]
+    cands = [c for c in cands if bpm_range[0] <= c <= bpm_range[1]]
+
+    def score(b):
+        L = 60 * frame_rate / b
+        bars = [_acf_at(acf, k * L) for k in (4, 8, 16) if k * L < 0.6 * n]
+        if not bars:
+            return -1.0
+        beat = (_acf_at(acf, L) + _acf_at(acf, 2 * L)) / 2
+        prior = np.exp(-0.5 * (np.log2(b / 135) / 1.0) ** 2)
+        return (0.65 * float(np.mean(bars)) + 0.35 * beat) * (0.85 + 0.15 * prior)
+
+    best = max(cands, key=score, default=bpm)
+    return best if score(best) > score(bpm) + 1e-9 else bpm
 
 
 def track_beats(env: np.ndarray, frame_rate: float, bpm: float, tightness: float = 300.0) -> np.ndarray:
@@ -178,8 +209,12 @@ def _fill_gaps(beats: np.ndarray, period: float, n: int) -> np.ndarray:
 def find_downbeat_phase(feats: dict[str, np.ndarray], beat_frames: np.ndarray) -> int:
     """Which beat (0-3) of the first bar is the '1'?
 
-    Bars in EDM change on the downbeat: new chord/bass note, crash, sections start.
-    So pick the phase where the beat-to-beat spectral change is biggest.
+    Three clues, z-scored and added up per candidate phase:
+    * spectral change: chords, bass notes, crashes and sections change on the 1
+    * kick ON the beat: every style has a kick on the 1
+    * snare ON the beat counts against: snares/claps sit on 2 & 4 (four-on-the-floor)
+      or on 3 (half-time dubstep/trap), never on the 1. Without this, half-time
+      tracks tie between 1 and 3 and lights end up a half bar off.
     """
     if len(beat_frames) < 9:
         return 0
@@ -187,6 +222,14 @@ def find_downbeat_phase(feats: dict[str, np.ndarray], beat_frames: np.ndarray) -
     segs = [coarse[a:b].mean(axis=0) for a, b in zip(beat_frames[:-1], beat_frames[1:]) if b > a]
     sync = np.array(segs)
     novelty = np.r_[0.0, np.linalg.norm(np.diff(sync, axis=0), axis=1)]
-    # (low-end energy jumps were tried here too, but offbeat basslines fool them)
-    scores = [novelty[p::4].mean() for p in range(4)]
-    return int(np.argmax(scores))
+    n = len(novelty)
+
+    def at_beats(x):
+        x = robust_norm(x)
+        return np.array([x[max(0, f - 3): f + 4].max() for f in beat_frames[:n]])
+
+    def z(v):
+        return (v - v.mean()) / (v.std() + 1e-9)
+
+    score = z(novelty) + z(at_beats(feats["kick_flux"])) - z(at_beats(feats["snare_flux"]))
+    return int(np.argmax([score[p::4].mean() for p in range(4)]))
