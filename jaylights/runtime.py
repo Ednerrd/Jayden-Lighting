@@ -7,19 +7,20 @@ import webbrowser
 
 from .dmx import build_universes, make_output
 from .rig import Rig
-from .show import Controls, ShowEngine
+from .show import DROP_STYLES, Controls, ShowEngine
 from .viz.server import VizServer
 
 
 def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_browser: bool = True,
              fps: float | None = None, title: str = "", max_seconds: float | None = None,
-             frame_hook=None):
+             frame_hook=None, drop_style: str = "auto"):
     engine = ShowEngine(rig.fixtures, genre)
-    ctl = Controls(master=rig.master, strobe_enabled=rig.strobe_enabled, max_strobe_hz=rig.max_strobe_hz)
+    ctl = Controls(master=rig.master, strobe_enabled=rig.strobe_enabled, max_strobe_hz=rig.max_strobe_hz,
+                   drop_style=drop_style if drop_style in DROP_STYLES else "auto")
     out = make_output(rig.output)
     fps = fps or float(rig.output.get("fps", 40))
 
-    info = {"mode": source.mode, "title": title, "genre": genre, "output": out.name,
+    info = {"mode": source.mode, "title": title, "genre": genre, "drop_styles": list(DROP_STYLES), "output": out.name,
             "fixtures": rig.layout(), "warnings": rig.warnings}
     if source.mode == "file":
         tl = source.timeline
@@ -37,6 +38,8 @@ def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_brows
             ctl.master = max(0.0, min(1.0, float(v)))
         elif a == "movement":
             ctl.movement = max(0.0, min(1.0, float(v)))
+        elif a == "drop_style":
+            ctl.drop_style = v if v in DROP_STYLES else "auto"
         elif a == "pause" and source.mode == "file":
             source.toggle_pause()
         elif a == "seek" and source.mode == "file":
@@ -75,7 +78,7 @@ def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_brows
                     "s": st.to_dict(),
                     "f": [f.effective(s, t0) for f, s in zip(rig.fixtures, states)],
                     "c": {"blackout": ctl.blackout, "strobe": ctl.strobe_enabled, "master": ctl.master,
-                          "movement": ctl.movement,
+                          "movement": ctl.movement, "drop_style": ctl.drop_style,
                           "forced": getattr(getattr(source, "analyzer", None), "forced", None)},
                 })
             if frame_hook:

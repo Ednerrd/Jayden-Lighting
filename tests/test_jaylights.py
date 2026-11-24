@@ -8,7 +8,7 @@ from jaylights.analysis.offline import analyze_audio
 from jaylights.dmx import ArtNet, EnttecPro, build_universes
 from jaylights.fixtures import BUILTIN_PROFILES, Fixture, FixtureState
 from jaylights.rig import EXAMPLE_RIG, load_rig, parse_rig
-from jaylights.show import Controls, ShowEngine
+from jaylights.show import DROP_ROTATION, DROP_STYLES, GENRES, Controls, ShowEngine
 from jaylights.state import BUILD, DROP
 from jaylights.synth import SR, make_track
 
@@ -135,3 +135,53 @@ def test_show_engine_whole_track():
             assert max(s.intensity for s in states) > 0.85, "impact on the drop"
     ctl.blackout = True
     assert all(s.intensity == 0 for s in eng.render(tl.state_at(drop_t + 1), ctl))
+
+
+@pytest.mark.parametrize("style", DROP_STYLES)
+@pytest.mark.parametrize("rig_kinds", [None, "wash", "mover", "strobe"])
+def test_every_drop_style_renders_a_whole_track(style, rig_kinds):
+    audio, _ = make_track(bpm=128)
+    tl = analyze_audio(audio, SR)
+    fixtures = load_rig(None).fixtures
+    if rig_kinds:                       # degrade gracefully: rigs with only one kind of light
+        fixtures = [f for f in fixtures if f.kind == rig_kinds]
+        assert fixtures
+    eng = ShowEngine(fixtures, "dubstep")
+    ctl = Controls(drop_style=style, max_strobe_hz=8.0)
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    drop_end = next(s["end"] for s in tl.sections if s["kind"] == DROP)
+    peak = 0.0
+    for t in np.arange(0, tl.duration, 0.05):
+        states = eng.render(tl.state_at(float(t)), ctl)
+        for s in states:
+            assert 0 <= s.intensity <= 1 and 0 <= s.pan <= 1 and 0 <= s.tilt <= 1
+            assert 0 <= s.strobe_hz <= ctl.max_strobe_hz
+            assert all(0 <= c <= 1 for c in (s.r, s.g, s.b))
+        if drop_t - 0.3 < t < drop_t - 0.05:
+            assert all(s.intensity == 0 for s in states), "blackout right before the drop"
+        if drop_t + 0.02 < t < drop_t + 0.1:
+            assert max(s.intensity for s in states) > (0.7 if rig_kinds == "strobe" else 0.85), "impact on the drop"
+        if drop_t + 1.0 < t < drop_end:
+            peak = max(peak, max(s.intensity for s in states))
+    assert peak > 0.5, "style does something strong on this rig"
+
+
+def test_drop_style_rotation_and_lock():
+    for genre in GENRES:
+        eng = ShowEngine(load_rig(None).fixtures, genre)
+        assert set(DROP_ROTATION[genre]) <= set(DROP_STYLES)
+        seen = {eng.drop_style_at(sb) for sb in range(0, 32 * len(DROP_ROTATION[genre]), 32)}
+        assert seen == set(DROP_ROTATION[genre])
+        assert eng.drop_style_at(70, "sweep") == "sweep"
+        assert eng.drop_style_at(70, "nonsense") in DROP_ROTATION[genre]
+
+
+def test_strobe_safety_holds_for_every_style():
+    audio, _ = make_track(bpm=174)
+    tl = analyze_audio(audio, SR)
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    for style in DROP_STYLES:
+        eng = ShowEngine(load_rig(None).fixtures, "dnb")
+        ctl = Controls(drop_style=style, strobe_enabled=False)
+        for t in np.arange(drop_t - 1, drop_t + 6, 0.02):
+            assert all(s.strobe_hz == 0 for s in eng.render(tl.state_at(float(t)), ctl))
