@@ -16,8 +16,8 @@ from collections import deque
 
 import numpy as np
 
-from ..state import BREAKDOWN, BUILD, DROP, GROOVE, MusicState
-from .beats import estimate_tempo, fold_phase
+from ..state import BREAKDOWN, BUILD, DROP, GROOVE, INTRO, MusicState
+from .beats import downbeat_scores, estimate_tempo, fold_phase
 from .features import FeatureExtractor
 
 
@@ -95,7 +95,7 @@ class LiveAnalyzer:
         self.bpm_range = bpm_range
         self.latency = latency  # extra seconds to predict ahead (DMX + fixture lag)
 
-        self.env_buf = deque(maxlen=int(8 * fr))     # all hits: for tempo
+        self.env_buf = deque(maxlen=int(16 * fr))    # all hits: for tempo (16 s = enough to see whole bars)
         self.phase_buf = deque(maxlen=int(6 * fr))   # kick + snare: for where the beat is
         self._ever_locked = False
         self._phase_good = False
@@ -117,12 +117,9 @@ class LiveAnalyzer:
         self._bpm_votes = 0
         self._pending_bpm = None
         self.downbeat_offset = 0     # which beat number mod 4 is the "1"
-        self._phase_nov = np.zeros(4)
-        self._last_coarse_beat = None
-        self._beat_coarse = []
 
         # per-beat measurements for the section logic
-        self._beat_acc = {"kick": 0.0, "tension": [], "energy": [], "low": [], "snares": 0}
+        self._beat_acc = self._new_acc()
         self.hist = deque(maxlen=64)
         self.section = GROOVE
         self.section_index = 0
@@ -135,6 +132,18 @@ class LiveAnalyzer:
         self._pre_drop = None   # set while a drop is still provisional
         self._pre_drop_low = 0.0
         self._drop_low = None
+        self.low_ref = None          # running "drop level" of the sub (log10 power, per-beat median)
+        self.peak_ref = None         # same, for the per-beat loudest frame (kick hits)
+        self._cooldown_until = -1.0  # no instant drops until this beat (after a false alarm)
+        self._kick_beat, self._prev_kick_e = 0.0, -9.0
+        self._drop_ref_energy = None  # loudness of confirmed drops (dB)
+        self._full = True            # is the floor shaking right now (with hysteresis)
+        self._empty_beats = 0
+        # rolling window for finding the "1" with the same method as offline mode
+        self._fbuf = deque(maxlen=int(16 * fr))   # (coarse, kick_flux, snare_flux) per frame
+        self._beat_frames = deque(maxlen=48)      # (frame number, beat number) at each beat
+        self._db_score = np.zeros(4)              # evidence per (beat number mod 4)
+        self._db_hold_until = -1.0                # after a tap, trust the user for a while
 
         self.state = MusicState(locked=False)
         self._kick_env = self._snare_env = self._hat_env = 0.0
@@ -153,8 +162,7 @@ class LiveAnalyzer:
         b = int(round(self.beat_pos))
         self.downbeat_offset = b % 4
         self.beat_pos = float(b) + (self.beat_pos - round(self.beat_pos))
-        self._phase_nov[:] = 0
-        self._phase_nov[self.downbeat_offset] = 5.0
+        self._db_hold_until = self.beat_pos + 64
 
     def nudge_half_beat(self):
         """Lights on the offbeat? Hit this."""
@@ -187,41 +195,57 @@ class LiveAnalyzer:
         self.phase_buf.append(0.5 * self._n_kick(f["kick_flux"]) + 0.5 * self._n_snare(f["snare_flux"]))
 
         # tempo + phase: re-estimate ~5x per second
-        if self.frame % 16 == 0 and len(self.env_buf) > fr * 3:
+        if self.frame % 16 == 0 and len(self.env_buf) > fr * 6:
             self._update_tempo()
 
         prev_beat = self.beat_pos
         self.beat_pos += self.bpm / 60.0 / fr
 
-        # THE DROP: first big kick after a build/breakdown. Don't wait for more beats.
-        self._low_slow += (f["kick_e"] - self._low_slow) / (2.0 * fr)
-        if k > 0 and self.section not in (BUILD, BREAKDOWN):
-            # remember how hard this track's real kicks hit
-            self._kick_ref = f["kick_e"] if self._kick_ref is None else 0.9 * self._kick_ref + 0.1 * f["kick_e"]
-        if (k > 0.3 and not self.forced and self.section in (BUILD, BREAKDOWN)
-                and self.no_kick_beats >= 4 and f["kick_e"] > self._low_slow + 0.8
-                and (self._kick_ref is None or f["kick_e"] > self._kick_ref - 0.4)):
-            b = round(self._beat_at_latency(-1.0 / fr))
-            self._pre_drop = (self.section, self.section_start_beat, self.downbeat_offset, b)
-            self.beat_pos = b + self.bpm / 60.0 / fr   # the drop is ON the beat
-            prev_beat = self.beat_pos - 1e-6
-            self.downbeat_offset = b % 4              # ...and on the 1
-            self._set_section(DROP)
-            self.no_kick_beats = 0
-            self.drop_energy = -120.0   # measured over the next beats
-            self._pre_drop_low = self._low_slow
-            self._kick_env = 1.0
+        # THE DROP: the sub slams back in after a build / breakdown / pre-drop gap.
+        # Fires on the first hit instead of waiting a beat or two.
+        frac = self.beat_pos - math.floor(self.beat_pos)
+        # triggered by the sub level itself crossing up (onset detectors get deafened by
+        # risers and snare rolls right when it matters)
+        prev_low, self._prev_kick_e = self._prev_kick_e, f["kick_e"]
+        if (not self.forced and self.section in (BUILD, BREAKDOWN) and self._pre_drop is None
+                and self.peak_ref is not None and len(self.hist) >= 16
+                and self.beat_pos > self._cooldown_until
+                # from a breakdown: only after 2+ bars and once tension is up (a kick coming
+                # back at the START of a build isn't a drop). From a build: any time.
+                and (self.section == BUILD or (self.beat_pos - self.section_start_beat >= 8
+                     and np.mean([x["tension"] for x in list(self.hist)[-4:]]) >= 0.6))):
+            # compare peak with peak: this frame's kick vs the loudest kicks of the track
+            hist = list(self.hist)
+            recent = float(np.mean([x["peak"] for x in hist[-2:]]))
+            # a drop is a low end we haven't heard for at least 4 bars
+            unheard = max(x["peak"] for x in hist[-16:]) + 0.25
+            level = max(self.peak_ref - 0.3, recent + 0.35, unheard)
+            if f["kick_e"] > level >= prev_low and (self._empty_beats >= 1 or recent < self.peak_ref - 0.35):
+                self._kick_beat = self._beat_at_latency(-0.5 / fr)
+                b = round(self._kick_beat)
+                self._pre_drop = (self.section, self.section_start_beat, self.downbeat_offset, b)
+                self._pre_drop_low = recent
+                self.beat_pos += b - self._kick_beat       # the drop is ON the beat
+                prev_beat = self.beat_pos - 1e-6
+                self.downbeat_offset = b % 4              # ...and on the 1
+                self._db_score[b % 4] += 3.0
+                self._set_section(DROP)
+                self.drop_energy = -120.0                 # measured over the next beats
+                self._kick_env = 1.0
 
         # per-beat accumulation
         acc = self._beat_acc
         acc["kick"] = max(acc["kick"], f["kick_flux"])
+        if frac < 0.15:   # right on the beat: which drum hits here? (for finding the "1")
+            acc["kick_on"] = max(acc["kick_on"], f["kick_flux"])
+            acc["snare_on"] = max(acc["snare_on"], f["snare_flux"])
         acc["energy"].append(20 * math.log10(f["rms"] + 1e-6))
         acc["low"].append(f["kick_e"])
         bright = math.log(f["centroid"] + 1)
         acc["tension"].append(f["hat_e"] + 2.0 * bright + 3.0 * f["flatness"])
         if s > 0:
             acc["snares"] += 1
-        self._beat_coarse.append(f["coarse"])
+        self._fbuf.append((f["coarse"], f["kick_flux"], f["snare_flux"]))
         if math.floor(self.beat_pos) > math.floor(prev_beat):
             self._on_beat()
 
@@ -249,7 +273,7 @@ class LiveAnalyzer:
         if env.std() < 1e-4:
             self.locked = False
             return
-        if self.locked and (not self._kick_running() or self.section in (BUILD, BREAKDOWN)):
+        if self.locked and (not (self._kick_running() or self._full) or self.section in (BUILD, BREAKDOWN)):
             # breakdown / build: nothing solid to follow (snare rolls lie), and the
             # tempo doesn't change mid-track, so just let the grid free-run
             return
@@ -258,8 +282,10 @@ class LiveAnalyzer:
         cand = estimate_tempo(env, self.fr, self.bpm_range, prior_bpm=self.bpm if self._ever_locked else 128.0)
         if not self._ever_locked:
             self.bpm = cand
-        elif abs(cand / self.bpm - 1) >= 0.03 and (self.section == DROP or not _ratio_related(cand, self.bpm)):
-            # (ratio jumps are only trusted during a drop: full drums = best evidence)
+        elif abs(cand / self.bpm - 1) >= 0.03 and (
+                self.section == DROP or self.frame < 45 * self.fr or not _ratio_related(cand, self.bpm)):
+            # ratio jumps (x3/4, x2/3...) are only trusted early on, or in a drop (full
+            # drums = best evidence); otherwise they're the tracker getting fooled
             # a different tempo has to win for ~3 s straight before we believe it
             if self._pending_bpm and abs(cand / self._pending_bpm - 1) < 0.03:
                 self._bpm_votes += 1
@@ -316,86 +342,114 @@ class LiveAnalyzer:
         self._phase_good = True
         self.beat_pos -= 0.3 * err if abs(err) < 0.3 else err
 
-    def _on_beat(self):
-        acc = self._beat_acc
-        beat_n = int(math.floor(self.beat_pos))
+    @staticmethod
+    def _new_acc():
+        return {"kick": 0.0, "kick_on": 0.0, "snare_on": 0.0, "tension": [], "energy": [], "low": [], "snares": 0}
 
-        # downbeat: bars change on the 1, so track which phase has the most spectral change
-        if self._beat_coarse:
-            c = np.mean(self._beat_coarse, axis=0)
-            if self._last_coarse_beat is not None:
-                nov = float(np.linalg.norm(c - self._last_coarse_beat))
-                ph = beat_n % 4
-                self._phase_nov *= 0.995
-                self._phase_nov[ph] += nov
-                best = int(np.argmax(self._phase_nov))
-                if best != self.downbeat_offset and self._phase_nov[best] > 1.15 * self._phase_nov[self.downbeat_offset]:
+    def _on_beat(self):
+        """Called when we cross into a new beat: score the beat that just ENDED."""
+        acc = self._beat_acc
+        ended = int(math.floor(self.beat_pos)) - 1
+
+        # downbeat: every bar, run the offline "1" finder (spectral change + kick on
+        # the beat - snare on the beat) over the last ~16 s. Change only on 2 votes.
+        self._beat_frames.append((self.frame, ended + 1))
+        if (ended + 1) % 4 == 0 and len(self._beat_frames) >= 17 and self.beat_pos > self._db_hold_until:
+            first = self.frame - len(self._fbuf) + 1
+            bf = [(fn - first, bn) for fn, bn in self._beat_frames if fn - first >= 0]
+            if len(bf) >= 13:
+                buf = list(self._fbuf)
+                feats = {"coarse": np.array([x[0] for x in buf]),
+                         "kick_flux": np.array([x[1] for x in buf]),
+                         "snare_flux": np.array([x[2] for x in buf])}
+                sc = downbeat_scores(feats, np.array([x[0] for x in bf]))
+                self._db_score *= 0.85
+                for ph in range(4):
+                    self._db_score[bf[ph][1] % 4] += sc[ph]
+                best = int(np.argmax(self._db_score))
+                if (best != self.downbeat_offset and self._pre_drop is None
+                        and self._db_score[best] > self._db_score[self.downbeat_offset] + 1.0):
                     self.downbeat_offset = best
-            self._last_coarse_beat = c
-            self._beat_coarse = []
 
         kick = self.g_kick(acc["kick"])
         energy = float(np.mean(acc["energy"])) if acc["energy"] else -60.0
         tension = self.g_tension(float(np.mean(acc["tension"]))) if acc["tension"] else 0.0
-        low = float(np.mean(acc["low"])) if acc["low"] else -9.0
-        self.hist.append({"kick": kick, "energy": energy, "tension": tension, "snares": acc["snares"], "low": low})
-        self._beat_acc = {"kick": 0.0, "tension": [], "energy": [], "low": [], "snares": 0}
+        low = float(np.median(acc["low"])) if acc["low"] else -9.0
+        peak = float(np.max(acc["low"])) if acc["low"] else -9.0
+        self.hist.append({"kick": kick, "energy": energy, "tension": tension, "snares": acc["snares"],
+                          "low": low, "peak": peak})
+        self.peak_ref = peak if self.peak_ref is None else max(peak, self.peak_ref - 0.0015)
+        self._beat_acc = self._new_acc()
+
+        # floor level: running drop-level reference + full/empty with hysteresis
+        self.low_ref = low if self.low_ref is None else max(low, self.low_ref - 0.0015)
+        if low > self.low_ref - 0.3:
+            self._full = True
+        elif low < self.low_ref - 0.8:
+            self._full = False
+        self._empty_beats = 0 if self._full else self._empty_beats + 1
         if not self.forced:
             self._sections()
+
+    def _rising(self) -> bool:
+        """Tension climbing for the last few bars: risers, hats opening up, snare rolls."""
+        h = list(self.hist)
+        if len(h) < 16:
+            return False
+        tension = np.array([x["tension"] for x in h[-16:]])
+        snares = np.array([x["snares"] for x in h[-16:]])
+        climb = np.polyfit(np.arange(16), tension, 1)[0] > 0.01 and tension[-4:].mean() > tension[:4].mean() + 0.15
+        roll = snares[-4:].mean() >= snares[:4].mean() + 1.5
+        return bool(climb or roll)
 
     def _sections(self):
         h = list(self.hist)
         if len(h) < 8:
             return
-        # "full" = kick pattern going, OR the low end is still at drop level (dubstep
-        # wobbles and trap 808s can smear the kick, but the floor is still shaking)
-        kick_now = self._kick_running() or (self._drop_low is not None and h[-1]["low"] > self._drop_low - 0.25)
-        if self.section == DROP and self._kick_running():
-            self._drop_low = h[-1]["low"] if self._drop_low is None else 0.95 * self._drop_low + 0.05 * h[-1]["low"]
         beats_in = self.beat_pos - self.section_start_beat
-        energy = np.mean([x["energy"] for x in h[-4:]])
-        tension = [x["tension"] for x in h[-16:]]
-        snares = [x["snares"] for x in h[-16:]]
-        rising = len(tension) >= 8 and (
-            np.polyfit(np.arange(len(tension)), tension, 1)[0] > 0.01
-            or np.mean(snares[-4:]) > np.mean(snares[:4]) + 1
-        )
-        self.no_kick_beats = 0 if kick_now else self.no_kick_beats + 1
+        energy = float(np.mean([x["energy"] for x in h[-4:]]))
+        rising = self._rising()
         sec = self.section
 
         if self._pre_drop is not None:
-            # provisional drop: needs the kick to keep going, or we take it back
+            # provisional drop: the floor has to stay up, or we take it back
             if beats_in >= 3:
-                # confirmed only if the kick pattern keeps going AND the low end stays up
-                low_up = np.mean([x["low"] for x in h[-3:]]) > self._pre_drop_low + 0.5
-                if not (self._kick_running(3) and low_up):
+                peaks = [x["peak"] for x in h[-3:]]
+                weak = self._drop_ref_energy is not None and energy < self._drop_ref_energy - 4
+                if weak or np.mean(peaks) < max(self.peak_ref - 0.45, self._pre_drop_low + 0.2):
                     prev, start, offset, _ = self._pre_drop
                     self.section, self.section_start_beat, self.downbeat_offset = prev, start, offset
                     self.section_index += 1
-                    self.no_kick_beats = 4
+                    self._cooldown_until = self.beat_pos + 16  # don't cry wolf again right away
+                else:
+                    e = float(np.mean([x["energy"] for x in h[-3:]]))
+                    self._drop_ref_energy = e if self._drop_ref_energy is None else max(e, self._drop_ref_energy - 1)
                 self._pre_drop = None
             return
         if beats_in < 8:
             return  # hold every section for at least 2 bars, no flicker
 
-        if kick_now:
-            if sec in (BUILD, BREAKDOWN):
-                # kick came back without the instant detector firing (soft re-entry)
-                self._set_section(GROOVE if sec == BREAKDOWN and energy < self.drop_energy - 6 else DROP)
-                if self.section == DROP:
-                    self.drop_energy = energy
+        if sec in (GROOVE, DROP):
+            if self.drop_energy < -100 and sec == DROP:
+                self.drop_energy = energy
+            if self._empty_beats >= 2:
+                self._set_section(BUILD if rising else BREAKDOWN)
             elif sec == DROP:
                 self.drop_energy = max(self.drop_energy - 0.02, float(np.mean([x["energy"] for x in h[-8:]])))
                 earlier = float(np.mean([x["energy"] for x in h[-8:-4]]))
                 if energy < self.drop_energy - 6 and earlier < self.drop_energy - 6 and beats_in > 32:
                     self._set_section(GROOVE)
-            elif sec == GROOVE and rising and np.mean(snares[-4:]) >= 3 and beats_in > 32:
+            elif rising and beats_in > 32 and np.mean([x["snares"] for x in h[-4:]]) >= 3:
                 self._set_section(BUILD)  # build with the kick still going
-        else:
-            if sec in (DROP, GROOVE) and self.no_kick_beats >= 2:
-                self._set_section(BUILD if rising else BREAKDOWN)
-            elif sec == BREAKDOWN and rising:
+        elif sec == BREAKDOWN:
+            if rising and beats_in >= 8:
                 self._set_section(BUILD)
+            elif self._full and self._empty_beats == 0 and beats_in > 8:
+                # floor came back without a big hit: a soft return, call it a groove
+                self._set_section(GROOVE)
+        elif sec == BUILD:
+            if self._full and not rising and beats_in > 64:
+                self._set_section(GROOVE)  # build that never dropped
 
     def _set_section(self, kind: str):
         if kind != self.section:
@@ -424,7 +478,7 @@ class LiveAnalyzer:
         st.beats_to_next = None
         st.locked = self.locked
         frac = beat - math.floor(beat)
-        kick_on = self._kick_running() and self.section not in (BUILD, BREAKDOWN)
+        kick_on = self._full and self.section in (GROOVE, DROP, INTRO)
         if self.locked and kick_on:
             # predicted pulse: fires exactly on the beat instead of after we hear it
             st.kick = math.exp(-frac * 60.0 / self.bpm / 0.12)

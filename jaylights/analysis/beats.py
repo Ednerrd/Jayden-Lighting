@@ -232,4 +232,25 @@ def find_downbeat_phase(feats: dict[str, np.ndarray], beat_frames: np.ndarray) -
         return (v - v.mean()) / (v.std() + 1e-9)
 
     score = z(novelty) + z(at_beats(feats["kick_flux"])) - z(at_beats(feats["snare_flux"]))
-    return int(np.argmax([score[p::4].mean() for p in range(4)]))
+    return int(np.argmax(downbeat_scores(feats, beat_frames, score)))
+
+
+def downbeat_scores(feats, beat_frames, _score=None) -> np.ndarray:
+    """Per-phase evidence (4 numbers) that beat p of the list is a '1'. See find_downbeat_phase."""
+    if _score is None:
+        if len(beat_frames) < 9:
+            return np.zeros(4)
+        coarse = feats["coarse"]
+        sync = np.array([coarse[a:b].mean(axis=0) for a, b in zip(beat_frames[:-1], beat_frames[1:]) if b > a])
+        novelty = np.r_[0.0, np.linalg.norm(np.diff(sync, axis=0), axis=1)]
+        n = len(novelty)
+
+        def at_beats(x):
+            x = robust_norm(x)
+            return np.array([x[max(0, f - 3): f + 4].max() for f in beat_frames[:n]])
+
+        def z(v):
+            return (v - v.mean()) / (v.std() + 1e-9)
+
+        _score = z(novelty) + z(at_beats(feats["kick_flux"])) - z(at_beats(feats["snare_flux"]))
+    return np.array([_score[p::4].mean() for p in range(4)])
