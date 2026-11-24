@@ -90,10 +90,10 @@
       const o = f * HOP; let sq = 0;
       for (let i = 0; i < FRAME; i++) { const v = x[o + i]; sq += v * v; re[i] = v * win[i]; im[i] = 0; }
       fft(re, im);
-      let tot = 0, cen = 0, acc = 0;
+      let tot = 0, cen = 0, acc = 0;  // acc/cs mimic numpy's float32 cumsum (matters for near-silent bands)
       for (let k = 0; k < nb; k++) {
         const m = Math.hypot(re[k], im[k]); spec[k] = m; const p = m * m; pw[k] = p;
-        tot += p; cen += p * freqs[k]; acc += p; cs[k] = acc; cur[k] = Math.log1p(m);
+        tot += p; cen += p * freqs[k]; const m32 = Math.fround(m); acc = Math.fround(acc + Math.fround(m32 * m32)); cs[k] = acc; cur[k] = Math.log1p(m);
       }
       if (!prev) prev = Float64Array.from(cur);
       let fluxAll = 0; const fluxK = new Float64Array(nb);
@@ -108,7 +108,7 @@
       F.centroid[f] = cen / (tot + 1e-12);
       let lg = 0, mh = 0; for (const k of hiIdx) { const p = pw[k] + 1e-12; lg += Math.log(p); mh += p; }
       F.flatness[f] = Math.exp(lg / hiIdx.length) / (mh / hiIdx.length);
-      for (let b = 0; b < N_COARSE; b++) F.coarse[f * N_COARSE + b] = Math.log10((cs[ci[b + 1]] - cs[ci[b]]) / Math.max(ci[b + 1] - ci[b], 1) + 1e-9);
+      for (let b = 0; b < N_COARSE; b++) F.coarse[f * N_COARSE + b] = Math.log10(Math.fround(cs[ci[b + 1]] - cs[ci[b]]) / Math.max(ci[b + 1] - ci[b], 1) + 1e-9);
       const t = prev; prev = cur; cur = t;
       if (progress && f % 2000 === 0) await progress(f / n);
     }
@@ -153,7 +153,26 @@
       const a = score[i - 1], b = score[i], c = score[i + 1], d = a - 2 * b + c;
       if (Math.abs(d) > 1e-12) lag += 0.5 * (a - c) / d;
     }
-    return 60 * fr / lag;
+    return rerankRatios(acf, fr, 60 * fr / lag, range);
+  }
+  function acfAt(acf, lag) {
+    const i = Math.floor(lag); if (i + 1 >= acf.length) return 0;
+    const f = lag - i; return acf[i] * (1 - f) + acf[i + 1] * f;
+  }
+  // bar-level re-ranking of ratio-related tempos (syncopated beats fool the beat-level ACF)
+  function rerankRatios(acf, fr, bpm, range) {
+    const n = acf.length;
+    const cands = [1 / 2, 2 / 3, 3 / 4, 4 / 5, 1, 5 / 4, 4 / 3, 3 / 2, 2].map(r => bpm * r).filter(c => range[0] <= c && c <= range[1]);
+    const score = b => {
+      const L = 60 * fr / b, bars = [];
+      for (const k of [4, 8, 16]) if (k * L < 0.6 * n) bars.push(acfAt(acf, k * L));
+      if (!bars.length) return -1;
+      const beat = (acfAt(acf, L) + acfAt(acf, 2 * L)) / 2, prior = Math.exp(-0.5 * (Math.log2(b / 135) / 1.0) ** 2);
+      return (0.65 * mean(bars) + 0.35 * beat) * (0.85 + 0.15 * prior);
+    };
+    let best = bpm, bs = -Infinity;
+    for (const c of cands) { const s = score(c); if (s > bs) { bs = s; best = c; } }
+    return bs > score(bpm) + 1e-9 ? best : bpm;
   }
   function foldPhase(env, period, offset = 0) {
     const n = env.length, bins = 64, hist = new Float64Array(bins), ph = new Float64Array(n);
@@ -215,20 +234,32 @@
     const beats = []; while (t >= 0) { beats.push(t); t = back[t]; }
     return fillGaps(beats.reverse(), period, n);
   }
-  function findDownbeatPhase(F, bf) {
-    if (bf.length < 9) return 0;
+  // per-phase evidence (4 numbers) that beat p of the list is a "1": z(novelty) + z(kick at beat) - z(snare at beat)
+  function downbeatScores(coarse, kickFlux, snareFlux, n, bf) {
+    if (bf.length < 9) return [0, 0, 0, 0];
     const sync = [];
     for (let i = 0; i < bf.length - 1; i++) {
       const a = bf[i], b = bf[i + 1]; if (b <= a) continue;
       const row = new Float64Array(N_COARSE);
-      for (let f = a; f < b; f++) for (let k = 0; k < N_COARSE; k++) row[k] += F.coarse[f * N_COARSE + k];
+      for (let f = a; f < b; f++) for (let k = 0; k < N_COARSE; k++) row[k] += coarse[f * N_COARSE + k];
       for (let k = 0; k < N_COARSE; k++) row[k] /= (b - a);
       sync.push(row);
     }
     const nov = [0];
     for (let i = 1; i < sync.length; i++) { let s = 0; for (let k = 0; k < N_COARSE; k++) s += (sync[i][k] - sync[i - 1][k]) ** 2; nov.push(Math.sqrt(s)); }
-    const scores = [0, 1, 2, 3].map(p => { let s = 0, c = 0; for (let i = p; i < nov.length; i += 4) { s += nov[i]; c++; } return s / c; });
-    return argmax(scores);
+    const m = nov.length;
+    const atBeats = x => {
+      const xn = robustNorm(x), o = [];
+      for (let q = 0; q < m; q++) { const f = bf[q]; let mx = -Infinity; for (let j = Math.max(0, f - 3); j < Math.min(n, f + 4); j++) mx = Math.max(mx, xn[j]); o.push(mx); }
+      return o;
+    };
+    const z = v => { const mu = mean(v), sd = std(v) + 1e-9; return v.map(t => (t - mu) / sd); };
+    const zn = z(nov), zk = z(atBeats(kickFlux)), zs = z(atBeats(snareFlux)), sc = zn.map((v, i) => v + zk[i] - zs[i]);
+    return [0, 1, 2, 3].map(p => { let s = 0, c = 0; for (let i = p; i < sc.length; i += 4) { s += sc[i]; c++; } return s / c; });
+  }
+  function findDownbeatPhase(F, bf) {
+    if (bf.length < 9) return 0;
+    return argmax(downbeatScores(F.coarse, F.kick_flux, F.snare_flux, F.n, bf));
   }
   function pickOnsets(x, fr, minGap, k = 1) {
     const n = x.length, w = Math.max(3, Math.floor(fr)), m = boxSame(x, w), sq = boxSame(x.map(v => v * v), w);
@@ -265,74 +296,90 @@
     if (M.density.length) { const d = Math.max(1, percentile(M.density, 95)); M.density = M.density.map(v => v / d); }
     return [barStarts, M];
   }
-  function segment(M) {
-    const n = M.kick.length; if (!n) return [];
-    const cols = [M.kick, M.low, M.energy, M.high, M.density].map(c => { const m = mean(c), s = std(c) + 1e-6; return c.map(v => (v - m) / s); });
-    const nov = (b, w = PHRASE) => {
-      if (b - 1 < 0 || b + 1 > n) return 0;
-      let s = 0; for (const c of cols) { const a = mean(c, Math.max(0, b - w), b), d = mean(c, b, Math.min(n, b + w)); s += (a - d) ** 2; }
-      return Math.sqrt(s);
-    };
-    let offset = 0, bestS = -Infinity;
-    for (let o = 0; o < PHRASE; o++) { let s = 0; for (let b = o + PHRASE; b < n; b += PHRASE) s += nov(b); if (s > bestS) { bestS = s; offset = o; } }
-    const bounds = new Set([0, n]);
-    for (let b = offset === 0 ? offset + PHRASE : offset; b < n; b += PHRASE) if (nov(b) > 1.0) bounds.add(b);
-    const bs = [...bounds].sort((a, b) => a - b), out = [];
-    for (let i = 0; i < bs.length - 1; i++) if (bs[i + 1] > bs[i]) out.push([bs[i], bs[i + 1]]);
-    return out;
+  // [start, end, flag] runs; runs shorter than minLen get absorbed by a neighbour
+  function runsOf(flags, minLen = 2) {
+    let runs = [];
+    flags.forEach((f, i) => { if (runs.length && runs[runs.length - 1][2] === f) runs[runs.length - 1][1] = i + 1; else runs.push([i, i + 1, f]); });
+    let changed = true;
+    while (changed && runs.length > 1) {
+      changed = false;
+      for (let i = 0; i < runs.length; i++) {
+        const r = runs[i];
+        const preDropGap = !r[2] && i > 0 && i < runs.length - 1 && runs[i + 1][1] - runs[i + 1][0] >= 4;
+        if (r[1] - r[0] < minLen && !preDropGap) {
+          const j = i > 0 ? i - 1 : i + 1;
+          runs[j][0] = Math.min(runs[j][0], r[0]); runs[j][1] = Math.max(runs[j][1], r[1]);
+          runs.splice(i, 1);
+          const merged = [];
+          for (const q of runs) { if (merged.length && merged[merged.length - 1][2] === q[2]) merged[merged.length - 1][1] = q[1]; else merged.push(q); }
+          runs = merged; changed = true; break;
+        }
+      }
+    }
+    return runs;
   }
   function labelSections(M) {
-    const segs = segment(M); if (!segs.length) return [];
-    const kick = M.kick, lo = percentile(kick, 15), hi = percentile(kick, 90), thr = hi - lo > 0.2 ? (lo + hi) / 2 : -1;
-    let info = segs.map(([a, b]) => {
-      let c = 0; for (let i = a; i < b; i++) if (kick[i] > thr) c++;
-      return { a, b, kick: c / (b - a) > 0.5, energy: mean(M.energy, a, b) + 0.5 * mean(M.low, a, b) };
-    });
-    const ke = info.filter(s => s.kick).map(s => s.energy), top = ke.length ? Math.max(...ke) : 1;
-    info.forEach((s, i) => {
-      if (s.kick) { const after = i > 0 && !info[i - 1].kick; s.kind = s.energy >= top - (after ? 0.2 : 0.05) ? DROP : GROOVE; }
-      else s.kind = BREAKDOWN;
-    });
-    const runs = [];
-    for (const s of info) {
-      const r = runs[runs.length - 1];
-      if (r && r.kind === s.kind) { const w0 = r.b - r.a, w1 = s.b - s.a; r.energy = (r.energy * w0 + s.energy * w1) / (w0 + w1); r.b = s.b; }
-      else runs.push({ ...s });
-    }
-    info = runs;
-    const out = [];
-    info.forEach((s, i) => {
-      const nxt = info[i + 1], { a, b, kind } = s;
-      if (nxt && nxt.kind === DROP && kind !== DROP) {
-        const tension = []; for (let j = a; j < b; j++) tension.push(M.tension[j] + 0.5 * M.density[j]);
-        const length = b - a; let bstart;
-        if (!s.kick) {
-          if (length <= 8) bstart = a;
-          else {
-            const search = tension.slice(0, length - PHRASE), mn = Math.min(...search), floor = mn + 0.25 * (Math.max(...tension) - mn);
-            let lastCalm = 0; search.forEach((v, j) => { if (v <= floor) lastCalm = j; });
-            const blen = clamp(roundHalfEven((length - lastCalm - 1) / PHRASE) * PHRASE, PHRASE, 16);
-            bstart = b - blen;
-          }
-        } else {
-          const tail = Math.min(8, length);
-          bstart = slope(tension.slice(-tail)) > 0.02 ? b - tail : b;
+    const low = M.low, n = low.length; if (!n) return [];
+    const p90 = percentile(low, 90), p10 = percentile(low, 10), thr = p90 - p10 > 0.15 ? p90 - 0.15 : null;
+    const full = Array.from(low, v => thr !== null ? v > thr : true);
+    const power = low.map((v, i) => M.energy[i] + 0.5 * v + 0.5 * M.high[i]);
+    const tension = low.map((v, i) => M.tension[i] + 0.5 * M.density[i]);
+    const pieces = [];
+    for (const [a, b, f] of runsOf(full)) {
+      const cuts = [a];
+      if (f && b - a >= 12) {
+        for (let c = a + 4; c < b - 3; c += PHRASE) {
+          const before = mean(power, Math.max(cuts[cuts.length - 1], c - 8), c), after = mean(power, c, Math.min(b, c + 8));
+          if (after - before > 0.2) cuts.push(c);
         }
-        if (bstart > a) out.push({ kind, start: a, end: bstart });
-        if (bstart < b) out.push({ kind: BUILD, start: bstart, end: b });
-      } else out.push({ kind, start: a, end: b });
+      }
+      cuts.push(b);
+      for (let i = 0; i < cuts.length - 1; i++) pieces.push([cuts[i], cuts[i + 1], f, i > 0]);
+    }
+    const fp = pieces.filter(p => p[2]).map(p => mean(power, p[0], p[1])), top = fp.length ? Math.max(...fp) : 1;
+    const kinds = pieces.map(([a, b, f, jumped], i) => {
+      if (!f) return BREAKDOWN;
+      const afterGap = i > 0 && (!pieces[i - 1][2] || jumped), margin = i === 1 ? 0.08 : 0.2;
+      return afterGap && mean(power, a, b) >= top - margin ? DROP : GROOVE;
     });
-    if (out.length && (out[0].kind === GROOVE || out[0].kind === BREAKDOWN)) out[0].kind = INTRO;
+    const out = [], last = () => out[out.length - 1];
+    pieces.forEach(([a, b, f], i) => {
+      const kind = kinds[i], nxt = i + 1 < kinds.length ? kinds[i + 1] : null;
+      if (nxt !== DROP || kind === DROP) { out.push({ kind, start: a, end: b }); return; }
+      let lo = a; if (out.length && last().kind !== DROP) lo = last().start;
+      const t = tension.slice(a, b), length = b - a; let blen;
+      if (!f && length <= 8 && slope(t) >= 0) blen = length;
+      else {
+        const search = length > 4 ? t.slice(0, -2) : t, mn = Math.min(...search), floor = mn + 0.25 * (Math.max(...t) - mn);
+        let lastCalm = 0; search.forEach((v, j) => { if (v <= floor) lastCalm = j; });
+        blen = length - lastCalm - 1;
+        if (f && slope(t.slice(-Math.min(8, length))) <= 0.01) blen = 0;
+      }
+      if (blen > 0) blen = clamp(Math.ceil(blen / PHRASE) * PHRASE, PHRASE, 32);
+      let start = Math.max(lo, b - blen);
+      while (out.length && last().start >= start && last().kind !== DROP) out.pop();
+      if (out.length && last().end > start && last().kind !== DROP) last().end = start;
+      else if (out.length && last().end > start) start = last().end;
+      if (start > a && (!out.length || last().end < a)) out.push({ kind, start: a, end: start });
+      else if (start > a) out.push({ kind, start: Math.max(a, last().end), end: start });
+      if (start < b) out.push({ kind: BUILD, start, end: b });
+    });
     let lastDrop = -1; out.forEach((s, i) => { if (s.kind === DROP) lastDrop = i; });
     if (lastDrop >= 0) {
+      const d = out[lastDrop]; let bestC = null, bestGain = 0.12;
+      for (let c = d.start + 8; c < d.end - 3; c += PHRASE) {
+        const gain = mean(power, d.start, c) - mean(power, c, d.end);
+        if (gain > bestGain) { bestC = c; bestGain = gain; }
+      }
+      if (bestC !== null) { out.splice(lastDrop + 1, 0, { kind: OUTRO, start: bestC, end: d.end }); d.end = bestC; }
       const nb = out[out.length - 1].end;
       for (const s of out.slice(lastDrop + 1)) if ((s.kind === GROOVE || s.kind === BREAKDOWN) && s.start >= 0.75 * nb) s.kind = OUTRO;
     }
+    if (out.length && (out[0].kind === GROOVE || out[0].kind === BREAKDOWN)) out[0].kind = INTRO;
     const merged = [];
     for (const s of out) { const m = merged[merged.length - 1]; if (m && m.kind === s.kind) m.end = s.end; else merged.push({ ...s }); }
     return merged;
   }
-
   // ---------------------------------------------------------------- offline timeline
   function analyzeOffline(F, range = [90, 190]) {
     const fr = F.frameRate, sr = F.sr, duration = (F.n - 1) * HOP / sr + FRAME / sr;
@@ -426,23 +473,35 @@
   }
   const ratioRelated = (a, b, tol = 0.015) => [0.5, 2 / 3, 0.75, 4 / 3, 1.5, 2].some(q => Math.abs(a / b / q - 1) < tol);
 
+  function median(a) { const s = Float64Array.from(a).sort(), n = s.length; return n % 2 ? s[(n - 1) >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2; }
+
   class LiveAnalyzer {
     constructor(sr, range = [90, 190], latency = 0.03) {
       const fr = sr / HOP; this.fr = fr; this.range = range; this.latency = latency;
-      this.envBuf = []; this.envMax = Math.floor(8 * fr); this.phaseBuf = []; this.phaseMax = Math.floor(6 * fr);
+      this.envBuf = []; this.envMax = Math.floor(16 * fr); this.phaseBuf = []; this.phaseMax = Math.floor(6 * fr);
       this.everLocked = false; this.phaseGood = false; this.flipVotes = 0;
       this.nKick = new PeakNorm(fr * 30); this.nSnare = new PeakNorm(fr * 30);
       this.kickDet = new OnsetDetector(fr, 0.15); this.snareDet = new OnsetDetector(fr, 0.06); this.hatDet = new OnsetDetector(fr, 0.05);
       this.gE = new AutoGain(fr * 20); this.gL = new AutoGain(fr * 20); this.gM = new AutoGain(fr * 20); this.gH = new AutoGain(fr * 20);
       this.gKick = new PeakNorm(60); this.gTension = new AutoGain(fr * 30); this.gEnv = new AutoGain(fr * 10);
       this.frame = 0; this.bpm = 128; this.beatPos = 0; this.locked = false; this.bpmVotes = 0; this.pendingBpm = null;
-      this.downbeat = 0; this.phaseNov = [0, 0, 0, 0]; this.lastCoarse = null; this.beatCoarse = [];
-      this.acc = { kick: 0, tension: [], energy: [], low: [], snares: 0 }; this.hist = [];
-      this.section = GROOVE; this.sectionIndex = 0; this.sectionStart = 0; this.noKick = 0; this.dropEnergy = 0;
-      this.lowSlow = -9; this.kickRef = null; this.preDrop = null; this.preDropLow = 0; this.dropLow = null;
+      this.downbeat = 0;
+      this.acc = this.newAcc(); this.hist = [];
+      this.section = GROOVE; this.sectionIndex = 0; this.sectionStart = 0; this.dropEnergy = 0; this.forced = null;
+      this.preDrop = null; this.preDropLow = 0;
+      this.lowRef = null; this.peakRef = null; this.cooldownUntil = -1; this.kickBeat = 0; this.prevKickE = -9;
+      this.dropRefEnergy = null; this.full = true; this.emptyBeats = 0;
+      this.fbufMax = Math.floor(16 * fr); this.fbuf = []; this.beatFrames = []; this.dbScore = [0, 0, 0, 0]; this.dbHoldUntil = -1;
       this.st = newState(); this.st.locked = false; this.kEnv = 0; this.sEnv = 0; this.hEnv = 0;
       this.dec = { kick: Math.exp(-1 / (0.12 * fr)), snare: Math.exp(-1 / (0.09 * fr)), hat: Math.exp(-1 / (0.05 * fr)) };
     }
+    forceSection(kind) { this.forced = kind; if (kind) this.setSection(kind); }
+    tapDownbeat() {
+      const b = roundHalfEven(this.beatPos); this.downbeat = mod(b, 4);
+      this.beatPos = b + (this.beatPos - b); this.dbHoldUntil = this.beatPos + 64;
+    }
+    nudgeHalfBeat() { this.beatPos += 0.5; this.flipVotes = 0; }
+    newAcc() { return { kick: 0, kickOn: 0, snareOn: 0, tension: [], energy: [], low: [], snares: 0 }; }
     bAt(dt) { return this.beatPos + dt * this.bpm / 60; }
     kickRunning(beats = 4) {
       if (this.hist.length < 4) return true;
@@ -456,20 +515,36 @@
       this.kEnv = Math.max(k, this.kEnv * this.dec.kick); this.sEnv = Math.max(s, this.sEnv * this.dec.snare); this.hEnv = Math.max(h, this.hEnv * this.dec.hat);
       this.envBuf.push(this.gEnv.g(0.6 * kf + 0.25 * sf + 0.15 * F.flux[i])); if (this.envBuf.length > this.envMax) this.envBuf.shift();
       this.phaseBuf.push(0.5 * this.nKick.g(kf) + 0.5 * this.nSnare.g(sf)); if (this.phaseBuf.length > this.phaseMax) this.phaseBuf.shift();
-      if (this.frame % 16 === 0 && this.envBuf.length > fr * 3) this.updateTempo();
+      if (this.frame % 16 === 0 && this.envBuf.length > fr * 6) this.updateTempo();
       let prev = this.beatPos; this.beatPos += this.bpm / 60 / fr;
-      this.lowSlow += (kE - this.lowSlow) / (2 * fr);
-      if (k > 0 && this.section !== BUILD && this.section !== BREAKDOWN) this.kickRef = this.kickRef === null ? kE : 0.9 * this.kickRef + 0.1 * kE;
-      if (k > 0.3 && (this.section === BUILD || this.section === BREAKDOWN) && this.noKick >= 4 && kE > this.lowSlow + 0.8 && (this.kickRef === null || kE > this.kickRef - 0.4)) {
-        const b = Math.round(this.bAt(-1 / fr));
-        this.preDrop = [this.section, this.sectionStart, this.downbeat, b];
-        this.beatPos = b + this.bpm / 60 / fr; prev = this.beatPos - 1e-6; this.downbeat = mod(b, 4);
-        this.setSection(DROP); this.noKick = 0; this.dropEnergy = -120; this.preDropLow = this.lowSlow; this.kEnv = 1;
+
+      // THE DROP: the sub level itself crossing up (onset detectors get deafened by risers and snare rolls)
+      const frac = this.beatPos - Math.floor(this.beatPos);
+      const prevLow = this.prevKickE; this.prevKickE = kE;
+      const h4 = this.hist.slice(-4);
+      if (!this.forced && (this.section === BUILD || this.section === BREAKDOWN) && this.preDrop === null
+          && this.peakRef !== null && this.hist.length >= 16 && this.beatPos > this.cooldownUntil
+          && (this.section === BUILD || (this.beatPos - this.sectionStart >= 8 && mean(h4.map(x => x.tension)) >= 0.6))) {
+        const hist = this.hist, recent = mean(hist.slice(-2).map(x => x.peak));
+        const unheard = Math.max(...hist.slice(-16).map(x => x.peak)) + 0.25;
+        const level = Math.max(this.peakRef - 0.3, recent + 0.35, unheard);
+        if (kE > level && level >= prevLow && (this.emptyBeats >= 1 || recent < this.peakRef - 0.35)) {
+          this.kickBeat = this.bAt(-0.5 / fr);
+          const b = roundHalfEven(this.kickBeat);
+          this.preDrop = [this.section, this.sectionStart, this.downbeat, b];
+          this.preDropLow = recent;
+          this.beatPos += b - this.kickBeat; prev = this.beatPos - 1e-6;
+          this.downbeat = mod(b, 4); this.dbScore[mod(b, 4)] += 3.0;
+          this.setSection(DROP); this.dropEnergy = -120; this.kEnv = 1;
+        }
       }
+
       const a = this.acc, en = 20 * Math.log10(F.rms[i] + 1e-6);
-      a.kick = Math.max(a.kick, kf); a.energy.push(en); a.low.push(kE);
+      a.kick = Math.max(a.kick, kf);
+      if (frac < 0.15) { a.kickOn = Math.max(a.kickOn, kf); a.snareOn = Math.max(a.snareOn, sf); }
+      a.energy.push(en); a.low.push(kE);
       a.tension.push(F.hat_e[i] + 2 * Math.log(F.centroid[i] + 1) + 3 * F.flatness[i]); if (s > 0) a.snares++;
-      this.beatCoarse.push(i);
+      this.fbuf.push(i); if (this.fbuf.length > this.fbufMax) this.fbuf.shift();
       if (Math.floor(this.beatPos) > Math.floor(prev)) this.onBeat(F);
       const st = this.st;
       st.energy = 0.8 * st.energy + 0.2 * this.gE.g(en);
@@ -480,10 +555,10 @@
     }
     updateTempo() {
       const env = this.envBuf; if (std(env) < 1e-4) { this.locked = false; return; }
-      if (this.locked && (!this.kickRunning() || this.section === BUILD || this.section === BREAKDOWN)) return;
+      if (this.locked && (!(this.kickRunning() || this.full) || this.section === BUILD || this.section === BREAKDOWN)) return;
       const cand = estimateTempo(env, this.fr, this.range, this.everLocked ? this.bpm : 128);
       if (!this.everLocked) this.bpm = cand;
-      else if (Math.abs(cand / this.bpm - 1) >= 0.03 && (this.section === DROP || !ratioRelated(cand, this.bpm))) {
+      else if (Math.abs(cand / this.bpm - 1) >= 0.03 && (this.section === DROP || this.frame < 45 * this.fr || !ratioRelated(cand, this.bpm))) {
         if (this.pendingBpm && Math.abs(cand / this.pendingBpm - 1) < 0.03) this.bpmVotes++; else { this.pendingBpm = cand; this.bpmVotes = 1; }
         if (this.bpmVotes >= 15) { this.bpm = cand; this.bpmVotes = 0; }
       } else this.bpmVotes = 0;
@@ -508,59 +583,80 @@
       const err = mod(mod(this.beatPos, 1) + hitPhase + 0.5, 1) - 0.5;
       if (Math.abs(err) > 0.3 && this.phaseGood) { this.flipVotes++; if (this.flipVotes < 5) return; }
       this.flipVotes = 0; this.phaseGood = true; this.beatPos -= Math.abs(err) < 0.3 ? 0.3 * err : err;
+
     }
     onBeat(F) {
-      const a = this.acc, beatN = Math.floor(this.beatPos);
-      if (this.beatCoarse.length) {
-        const c = new Float64Array(N_COARSE);
-        for (const i of this.beatCoarse) for (let k = 0; k < N_COARSE; k++) c[k] += F.coarse[i * N_COARSE + k];
-        for (let k = 0; k < N_COARSE; k++) c[k] /= this.beatCoarse.length;
-        if (this.lastCoarse) {
-          let s = 0; for (let k = 0; k < N_COARSE; k++) s += (c[k] - this.lastCoarse[k]) ** 2;
-          const ph = mod(beatN, 4); this.phaseNov = this.phaseNov.map(v => v * 0.995); this.phaseNov[ph] += Math.sqrt(s);
-          const best = argmax(this.phaseNov);
-          if (best !== this.downbeat && this.phaseNov[best] > 1.15 * this.phaseNov[this.downbeat]) this.downbeat = best;
+      const a = this.acc, ended = Math.floor(this.beatPos) - 1;
+      // downbeat: every bar, run the offline "1" finder over the last ~16 s of frames; change only on 2 votes
+      this.beatFrames.push([this.frame, ended + 1]); if (this.beatFrames.length > 48) this.beatFrames.shift();
+      if (mod(ended + 1, 4) === 0 && this.beatFrames.length >= 17 && this.beatPos > this.dbHoldUntil) {
+        const first = this.frame - this.fbuf.length + 1;
+        const bf = this.beatFrames.filter(([fn]) => fn - first >= 0).map(([fn, bn]) => [fn - first, bn]);
+        if (bf.length >= 13) {
+          const i0 = this.fbuf[0], len = this.fbuf.length;
+          const sc = downbeatScores(F.coarse.subarray(i0 * N_COARSE, (i0 + len) * N_COARSE), F.kick_flux.subarray(i0, i0 + len), F.snare_flux.subarray(i0, i0 + len), len, bf.map(x => x[0]));
+          this.dbScore = this.dbScore.map(v => v * 0.85);
+          for (let ph = 0; ph < 4; ph++) this.dbScore[mod(bf[ph][1], 4)] += sc[ph];
+          const best = argmax(this.dbScore);
+          if (best !== this.downbeat && this.preDrop === null && this.dbScore[best] > this.dbScore[this.downbeat] + 1.0) this.downbeat = best;
         }
-        this.lastCoarse = c; this.beatCoarse = [];
       }
-      this.hist.push({ kick: this.gKick.g(a.kick), energy: a.energy.length ? mean(a.energy) : -60,
-        tension: a.tension.length ? this.gTension.g(mean(a.tension)) : 0, snares: a.snares, low: a.low.length ? mean(a.low) : -9 });
-      if (this.hist.length > 64) this.hist.shift();
-      this.acc = { kick: 0, tension: [], energy: [], low: [], snares: 0 };
-      this.sections();
+      const kick = this.gKick.g(a.kick), energy = a.energy.length ? mean(a.energy) : -60;
+      const tension = a.tension.length ? this.gTension.g(mean(a.tension)) : 0;
+      const low = a.low.length ? median(a.low) : -9, peak = a.low.length ? Math.max(...a.low) : -9;
+      this.hist.push({ kick, energy, tension, snares: a.snares, low, peak }); if (this.hist.length > 64) this.hist.shift();
+      this.peakRef = this.peakRef === null ? peak : Math.max(peak, this.peakRef - 0.0015);
+      this.acc = this.newAcc();
+      // floor level: running drop-level reference + full/empty with hysteresis
+      this.lowRef = this.lowRef === null ? low : Math.max(low, this.lowRef - 0.0015);
+      if (low > this.lowRef - 0.3) this.full = true; else if (low < this.lowRef - 0.8) this.full = false;
+      this.emptyBeats = this.full ? 0 : this.emptyBeats + 1;
+      if (!this.forced) this.sections();
+    }
+    // tension climbing for the last few bars: risers, hats opening up, snare rolls
+    rising() {
+      const h = this.hist; if (h.length < 16) return false;
+      const t = h.slice(-16).map(x => x.tension), sn = h.slice(-16).map(x => x.snares);
+      const climb = slope(t) > 0.01 && mean(t, 12, 16) > mean(t, 0, 4) + 0.15;
+      const roll = mean(sn, 12, 16) >= mean(sn, 0, 4) + 1.5;
+      return climb || roll;
     }
     sections() {
       const h = this.hist; if (h.length < 8) return;
-      const last = h[h.length - 1];
-      const kickNow = this.kickRunning() || (this.dropLow !== null && last.low > this.dropLow - 0.25);
-      if (this.section === DROP && this.kickRunning()) this.dropLow = this.dropLow === null ? last.low : 0.95 * this.dropLow + 0.05 * last.low;
-      const beatsIn = this.beatPos - this.sectionStart, energy = mean(h.slice(-4).map(x => x.energy));
-      const tension = h.slice(-16).map(x => x.tension), sn = h.slice(-16).map(x => x.snares);
-      const rising = tension.length >= 8 && (slope(tension) > 0.01 || mean(sn.slice(-4)) > mean(sn.slice(0, 4)) + 1);
-      this.noKick = kickNow ? 0 : this.noKick + 1;
-      const sec = this.section;
-      if (this.preDrop) {
+      const beatsIn = this.beatPos - this.sectionStart, energy = mean(h.slice(-4).map(x => x.energy)), rising = this.rising(), sec = this.section;
+      if (this.preDrop !== null) {
+        // provisional drop: the floor has to stay up, or we take it back
         if (beatsIn >= 3) {
-          const lowUp = mean(h.slice(-3).map(x => x.low)) > this.preDropLow + 0.5;
-          if (!(this.kickRunning(3) && lowUp)) { const [p, s, o] = this.preDrop; this.section = p; this.sectionStart = s; this.downbeat = o; this.sectionIndex++; this.noKick = 4; }
+          const peaks = h.slice(-3).map(x => x.peak);
+          const weak = this.dropRefEnergy !== null && energy < this.dropRefEnergy - 4;
+          if (weak || mean(peaks) < Math.max(this.peakRef - 0.45, this.preDropLow + 0.2)) {
+            const [p, s, o] = this.preDrop; this.section = p; this.sectionStart = s; this.downbeat = o; this.sectionIndex++;
+            this.cooldownUntil = this.beatPos + 16;
+          } else {
+            const e = mean(h.slice(-3).map(x => x.energy));
+            this.dropRefEnergy = this.dropRefEnergy === null ? e : Math.max(e, this.dropRefEnergy - 1);
+          }
           this.preDrop = null;
         }
         return;
       }
       if (beatsIn < 8) return;
-      if (kickNow) {
-        if (sec === BUILD || sec === BREAKDOWN) { this.setSection(sec === BREAKDOWN && energy < this.dropEnergy - 6 ? GROOVE : DROP); if (this.section === DROP) this.dropEnergy = energy; }
+      if (sec === GROOVE || sec === DROP) {
+        if (this.dropEnergy < -100 && sec === DROP) this.dropEnergy = energy;
+        if (this.emptyBeats >= 2) this.setSection(rising ? BUILD : BREAKDOWN);
         else if (sec === DROP) {
           this.dropEnergy = Math.max(this.dropEnergy - 0.02, mean(h.slice(-8).map(x => x.energy)));
           const earlier = mean(h.slice(-8, -4).map(x => x.energy));
           if (energy < this.dropEnergy - 6 && earlier < this.dropEnergy - 6 && beatsIn > 32) this.setSection(GROOVE);
-        } else if (sec === GROOVE && rising && mean(sn.slice(-4)) >= 3 && beatsIn > 32) this.setSection(BUILD);
-      } else {
-        if ((sec === DROP || sec === GROOVE) && this.noKick >= 2) this.setSection(rising ? BUILD : BREAKDOWN);
-        else if (sec === BREAKDOWN && rising) this.setSection(BUILD);
+        } else if (rising && beatsIn > 32 && mean(h.slice(-4).map(x => x.snares)) >= 3) this.setSection(BUILD);
+      } else if (sec === BREAKDOWN) {
+        if (rising && beatsIn >= 8) this.setSection(BUILD);
+        else if (this.full && this.emptyBeats === 0 && beatsIn > 8) this.setSection(GROOVE);
+      } else if (sec === BUILD) {
+        if (this.full && !rising && beatsIn > 64) this.setSection(GROOVE);
       }
     }
-    setSection(k) { if (k !== this.section) { this.section = k; this.sectionIndex++; this.sectionStart = Math.round(this.beatPos); } }
+    setSection(k) { if (k !== this.section) { this.section = k; this.sectionIndex++; this.sectionStart = roundHalfEven(this.beatPos); } }
     publish() {
       const st = this.st, beat = this.bAt(this.latency), rel = beat - this.downbeat;
       st.t = this.frame / this.fr; st.bpm = this.bpm; st.beat = beat; st.beat_in_bar = mod(rel, 4); st.bar = Math.floor(rel / 4);
@@ -568,7 +664,7 @@
       if (this.section === BUILD) { const tn = this.hist.length ? this.hist[this.hist.length - 1].tension : 0; st.section_progress = Math.min(0.98, 0.5 * st.section_beats / 32 + 0.5 * tn); }
       else st.section_progress = Math.min(1, st.section_beats / 64);
       st.next_section = null; st.beats_to_next = null; st.locked = this.locked;
-      const frac = beat - Math.floor(beat), kickOn = this.kickRunning() && this.section !== BUILD && this.section !== BREAKDOWN;
+      const frac = beat - Math.floor(beat), kickOn = this.full && (this.section === GROOVE || this.section === DROP || this.section === INTRO);
       st.kick = this.locked && kickOn ? Math.exp(-frac * 60 / this.bpm / 0.12) : this.kEnv; st.snare = this.sEnv; st.hat = this.hEnv;
     }
   }
