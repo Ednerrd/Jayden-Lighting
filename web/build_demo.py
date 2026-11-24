@@ -14,20 +14,35 @@ OUT = sys.argv[1]
 FPS = 30
 rig = load_rig(None)
 
+sys.path.insert(0, __import__('os').path.join(__import__('os').path.dirname(__import__('os').path.dirname(__import__('os').path.abspath(__file__))), "tools"))
+import stress_synth  # noqa: E402  (realistic trap/dubstep test tracks with ground truth)
+
 meta = {"fps": FPS, "fixtures": rig.layout(), "sections": list(SECTIONS), "tracks": {}}
-for key, bpm, ht in (("house", 126, False), ("dubstep", 140, True)):
-    audio, truth = make_track(bpm=bpm, halftime=ht)
+
+
+def clean_house():
+    audio, truth = make_track(bpm=126)
+    return audio, 126, truth
+
+
+def stress(name):
+    audio, truth = stress_synth.make_realistic_track(name)
+    return audio, truth["bpm"], [tuple(x) for x in truth["sections"]]
+
+
+for key, maker in (("house", clean_house), ("dubstep", lambda: stress("dubstep_halftime")),
+                   ("trap", lambda: stress("trap_808_140"))):
+    audio, bpm, truth = maker()
     dur = len(audio) / SR
     sf.write(f"{OUT}/{key}.mp3", audio, SR, format="MP3")
     tl = analyze_audio(audio, SR)
     meta["tracks"][key] = {
         "bpm": bpm, "duration": round(dur, 3), "frames": int(dur * FPS),
         "truth": [{"kind": k, "start": round(s, 2), "end": round(e, 2)} for k, s, e in truth],
-        # the page replaces these with its in-browser analysis once the track is loaded
         "offline_sections": [{"kind": s["kind"], "start": s["start"], "end": s["end"]} for s in tl.sections],
         "live_sections": [],
         "detected_bpm": round(tl.bpm, 2),
     }
-    print(key, 'bpm', round(tl.bpm, 2), 'offline', [(s['kind'][:5], s['start']) for s in tl.sections])
+    print(key, round(dur), 's bpm', round(tl.bpm, 2), 'offline', [(s['kind'][:5], round(s['start'], 1)) for s in tl.sections])
 with open(f"{OUT}/meta.json", "w") as f:
     json.dump(meta, f)

@@ -120,6 +120,7 @@
     <div class="seg" id="trackSeg">
       <button id="t-house" data-track="house" aria-pressed="true">House &middot; 126</button>
       <button id="t-dubstep" data-track="dubstep" aria-pressed="false">Dubstep &middot; 140</button>
+      <button id="t-trap" data-track="trap" aria-pressed="false">Trap &middot; 140</button>
       <button id="t-mine" data-track="mine" aria-pressed="false" hidden>Your track</button>
     </div>
     <span class="label">Mode</span>
@@ -210,7 +211,7 @@ const SEC_COL = { intro: "#6b7cff", groove: "#22d3ee", breakdown: "#a78bfa", bui
 const $ = id => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d");
 let meta = null, cache = {}, show = null, track = "house", mode = "pre", dropStyle = "auto";
-const DEMO_GENRE = { house: "house", dubstep: "dubstep" };
+const DEMO_GENRE = { house: "house", dubstep: "dubstep", trap: "trap" };
 let audio = new Audio(), started = false, blackout = false, strobes = true;
 let W = 0, H = 0;
 
