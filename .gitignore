@@ -9,3 +9,4 @@ dist/
 web/*.mp3
 web/*_show.json
 web/meta.json
+.claude/
