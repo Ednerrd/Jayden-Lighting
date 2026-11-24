@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jaylights"
+version = "0.1.0"
+description = "Automatic EDM light shows from music (live or pre-analyzed), out over DMX."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.24",
+  "soundfile>=0.12",
+  "sounddevice>=0.4.6",
+  "pyserial>=3.5",
+]
+
+[project.optional-dependencies]
+loopback = ["soundcard>=0.4.3"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+jaylights = "jaylights.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["jaylights*"]
+
+[tool.setuptools.package-data]
+"jaylights.viz" = ["index.html"]

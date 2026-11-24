@@ -116,9 +116,12 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
         })
     kick_e = [s["energy"] for s in info if s["kick"]]
     top = max(kick_e) if kick_e else 1.0
-    for s in info:
+    for i, s in enumerate(info):
         if s["kick"]:
-            s["kind"] = DROP if s["energy"] >= top - 0.15 else GROOVE
+            # drops come right after a build/breakdown. A loud kick section without
+            # one has to be clearly the loudest thing in the track to count.
+            after_break = i > 0 and not info[i - 1]["kick"]
+            s["kind"] = DROP if s["energy"] >= top - (0.2 if after_break else 0.05) else GROOVE
         else:
             s["kind"] = BREAKDOWN
 

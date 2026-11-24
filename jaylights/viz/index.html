@@ -1,0 +1,282 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jaylights</title>
+<style>
+  :root {
+    --bg: #07070c; --panel: #11121a; --panel2: #191a25; --line: #262838;
+    --text: #e8e9f3; --dim: #8a8ca3;
+    --intro: #6b7cff; --groove: #22d3ee; --breakdown: #a78bfa; --build: #fbbf24; --drop: #f43f5e; --outro: #64748b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font: 14px/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; overflow: hidden; }
+  #app { display: grid; grid-template-rows: auto 1fr auto auto; height: 100%; }
+  header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 16px;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .brand b { letter-spacing: .18em; font-size: 15px; }
+  .badge { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 99px; background: var(--panel2);
+    border: 1px solid var(--line); color: var(--dim); letter-spacing: .08em; }
+  .badge.live { color: #fff; background: #b91c1c; border-color: #ef4444; }
+  .title { color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .section { text-align: center; min-width: 220px; }
+  #secname { font-size: 26px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; transition: color .2s; }
+  #progress { height: 4px; background: var(--panel2); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  #progress div { height: 100%; width: 0; background: currentColor; }
+  .tempo { display: flex; justify-content: flex-end; align-items: center; gap: 14px; }
+  #bpm { font-size: 26px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  #bpm small { font-size: 12px; color: var(--dim); font-weight: 600; margin-left: 3px; }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 12px; height: 12px; border-radius: 50%; background: var(--panel2); border: 1px solid var(--line); }
+  .dots i.on { background: #fff; box-shadow: 0 0 10px #fff; }
+  .dots i.one.on { background: var(--drop); box-shadow: 0 0 12px var(--drop); }
+  #lock { font-size: 11px; font-weight: 700; letter-spacing: .08em; }
+  #stagewrap { position: relative; min-height: 0; }
+  canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .meters { position: absolute; left: 12px; bottom: 12px; display: flex; gap: 6px; align-items: flex-end;
+    background: rgba(10,10,16,.7); padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); }
+  .meter { width: 14px; height: 60px; background: var(--panel2); border-radius: 3px; position: relative; overflow: hidden; }
+  .meter div { position: absolute; bottom: 0; left: 0; right: 0; background: var(--groove); }
+  .meters label { font-size: 9px; color: var(--dim); display: block; text-align: center; margin-top: 3px; }
+  .hit { width: 22px; height: 22px; border-radius: 50%; border: 1px solid var(--line); margin-bottom: 14px; }
+  #warn { position: absolute; right: 12px; top: 12px; max-width: 360px; font-size: 12px; color: #fbbf24;
+    background: rgba(10,10,16,.8); padding: 6px 10px; border-radius: 8px; display: none; }
+  #timeline { height: 26px; position: relative; background: var(--panel); border-top: 1px solid var(--line); cursor: pointer; display: none; }
+  #timeline .seg { position: absolute; top: 4px; bottom: 4px; border-radius: 3px; opacity: .55; font-size: 10px;
+    padding: 2px 4px; overflow: hidden; color: #000; font-weight: 700; text-transform: uppercase; }
+  #playhead { position: absolute; top: 0; bottom: 0; width: 2px; background: #fff; box-shadow: 0 0 8px #fff; }
+  footer { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px;
+    background: var(--panel); border-top: 1px solid var(--line); }
+  button { background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; font: inherit; font-weight: 700; cursor: pointer; letter-spacing: .04em; }
+  button:hover { border-color: #444760; }
+  button.on { background: #f8fafc; color: #000; }
+  button.danger.on { background: #dc2626; color: #fff; border-color: #ef4444; }
+  button kbd { font: 10px ui-monospace, monospace; opacity: .55; margin-left: 4px; }
+  .sep { width: 1px; height: 26px; background: var(--line); margin: 0 4px; }
+  .slider { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
+  input[type=range] { width: 110px; accent-color: #f8fafc; }
+  .grow { flex: 1; }
+  #clock { font-variant-numeric: tabular-nums; color: var(--dim); }
+  @media (max-width: 760px) {
+    header { grid-template-columns: 1fr auto; }
+    .section { grid-column: 1 / -1; grid-row: 2; }
+    #secname { font-size: 20px; }
+    footer { padding: 8px; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="brand"><b>JAYLIGHTS</b><span id="mode" class="badge">—</span><span id="title" class="title"></span></div>
+    <div class="section"><div id="secname">waiting</div><div id="progress"><div></div></div></div>
+    <div class="tempo">
+      <span id="lock"></span>
+      <div class="dots"><i class="one"></i><i></i><i></i><i></i></div>
+      <div id="bpm">---<small>BPM</small></div>
+    </div>
+  </header>
+  <div id="stagewrap">
+    <canvas id="stage"></canvas>
+    <div class="meters" aria-label="audio meters">
+      <div><div class="hit" id="h-kick"></div><label>KICK</label></div>
+      <div><div class="hit" id="h-snare"></div><label>SNR</label></div>
+      <div><div class="hit" id="h-hat"></div><label>HAT</label></div>
+      <div><div class="meter"><div id="m-low"></div></div><label>LOW</label></div>
+      <div><div class="meter"><div id="m-mid"></div></div><label>MID</label></div>
+      <div><div class="meter"><div id="m-high"></div></div><label>HIGH</label></div>
+      <div><div class="meter"><div id="m-energy"></div></div><label>NRG</label></div>
+    </div>
+    <div id="warn"></div>
+  </div>
+  <div id="timeline"><div id="playhead"></div></div>
+  <footer>
+    <button id="b-blackout" class="danger" data-action="blackout">BLACKOUT<kbd>B</kbd></button>
+    <button id="b-strobe" data-action="strobe">STROBES<kbd>S</kbd></button>
+    <label class="slider">MASTER <input id="s-master" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <label class="slider">MOVE <input id="s-move" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <span class="sep"></span>
+    <span id="filectl" style="display:none"><button data-action="pause">PLAY / PAUSE<kbd>SPACE</kbd></button></span>
+    <span id="livectl" style="display:none">
+      <button data-force="">AUTO<kbd>0</kbd></button>
+      <button data-force="groove">GROOVE<kbd>1</kbd></button>
+      <button data-force="breakdown">BREAK<kbd>2</kbd></button>
+      <button data-force="build">BUILD<kbd>3</kbd></button>
+      <button data-force="drop">DROP<kbd>4</kbd></button>
+      <span class="sep"></span>
+      <button data-action="tap_one" title="Press exactly on the 1 of a bar">TAP THE 1<kbd>T</kbd></button>
+      <button data-action="half_beat" title="Lights hitting on the offbeat? Press this">½ BEAT<kbd>H</kbd></button>
+    </span>
+    <span class="grow"></span>
+    <span id="clock"></span>
+  </footer>
+</div>
+<script>
+const SEC_COLORS = { intro: "#6b7cff", groove: "#22d3ee", breakdown: "#a78bfa", build: "#fbbf24", drop: "#f43f5e", outro: "#64748b" };
+const $ = (id) => document.getElementById(id);
+const cv = $("stage"), ctx = cv.getContext("2d");
+let info = null, frame = null, W = 0, H = 0, DPR = 1;
+
+function resize() {
+  DPR = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect();
+  W = r.width; H = r.height;
+  cv.width = Math.round(W * DPR); cv.height = Math.round(H * DPR);
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+}
+window.addEventListener("resize", resize);
+
+function send(action, value) {
+  fetch("/control", { method: "POST", body: JSON.stringify({ action, value }) }).catch(() => {});
+}
+document.querySelectorAll("[data-action]").forEach(b => b.onclick = () => send(b.dataset.action));
+document.querySelectorAll("[data-force]").forEach(b => b.onclick = () => send("force", b.dataset.force));
+$("s-master").oninput = e => send("master", +e.target.value);
+$("s-move").oninput = e => send("movement", +e.target.value);
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT") return;
+  const k = e.key.toLowerCase();
+  if (k === "b") send("blackout");
+  else if (k === "s") send("strobe");
+  else if (k === " ") { e.preventDefault(); send("pause"); }
+  else if (k === "t") send("tap_one");
+  else if (k === "h") send("half_beat");
+  else if ("01234".includes(k) && info && info.mode === "live") send("force", ["", "groove", "breakdown", "build", "drop"][+k]);
+});
+
+function fmt(t) { t = Math.max(0, t); const m = Math.floor(t / 60), s = Math.floor(t % 60); return m + ":" + String(s).padStart(2, "0"); }
+
+async function init() {
+  info = await (await fetch("/info")).json();
+  $("mode").textContent = info.mode === "live" ? "LIVE" : "TRACK";
+  $("mode").classList.toggle("live", info.mode === "live");
+  $("title").textContent = info.title || "";
+  $(info.mode === "live" ? "livectl" : "filectl").style.display = "inline-flex";
+  if (info.warnings && info.warnings.length) { $("warn").style.display = "block"; $("warn").textContent = "⚠ " + info.warnings.join(" · "); }
+  if (info.mode === "file") {
+    const tl = $("timeline"); tl.style.display = "block";
+    for (const s of info.sections) {
+      const d = document.createElement("div"); d.className = "seg";
+      d.style.left = (s.start / info.duration * 100) + "%";
+      d.style.width = ((s.end - s.start) / info.duration * 100) + "%";
+      d.style.background = SEC_COLORS[s.kind] || "#888"; d.textContent = s.kind;
+      tl.appendChild(d);
+    }
+    tl.onclick = e => { const r = tl.getBoundingClientRect(); send("seek", (e.clientX - r.left) / r.width * info.duration); };
+  }
+  resize();
+  const es = new EventSource("/events");
+  es.onmessage = ev => { frame = JSON.parse(ev.data); };
+  requestAnimationFrame(draw);
+}
+
+function rgba(c, a) { return `rgba(${Math.round(c.r * 255)},${Math.round(c.g * 255)},${Math.round(c.b * 255)},${a})`; }
+
+function beam(x, y, angle, len, w0, w1, c, a) {
+  const dx = Math.sin(angle), dy = Math.cos(angle);
+  const ex = x + dx * len, ey = y + dy * len;
+  const px = -dy, py = dx;
+  const g = ctx.createLinearGradient(x, y, ex, ey);
+  g.addColorStop(0, rgba(c, a)); g.addColorStop(1, rgba(c, 0));
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.moveTo(x + px * w0, y + py * w0); ctx.lineTo(ex + px * w1, ey + py * w1);
+  ctx.lineTo(ex - px * w1, ey - py * w1); ctx.lineTo(x - px * w0, y - py * w0);
+  ctx.closePath(); ctx.fill();
+  return [ex, ey];
+}
+function glow(x, y, r, c, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r);
+  g.addColorStop(0, rgba(c, a)); g.addColorStop(1, rgba(c, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!info) return;
+  const trussY = H * 0.12, floorY = H * 0.9;
+  ctx.globalCompositeOperation = "source-over";
+  const bg = ctx.createLinearGradient(0, 0, 0, H);
+  bg.addColorStop(0, "#05050a"); bg.addColorStop(1, "#0d0d16");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  // floor
+  ctx.fillStyle = "#0a0a12"; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.strokeStyle = "#1c1d2b"; ctx.beginPath(); ctx.moveTo(0, floorY); ctx.lineTo(W, floorY); ctx.stroke();
+  // truss
+  ctx.fillStyle = "#1b1c27"; ctx.fillRect(W * 0.03, trussY - 7, W * 0.94, 8);
+  ctx.strokeStyle = "#2a2c3d";
+  for (let x = W * 0.03; x < W * 0.97; x += 14) { ctx.beginPath(); ctx.moveTo(x, trussY - 7); ctx.lineTo(x + 7, trussY + 1); ctx.stroke(); }
+
+  if (!frame) return;
+  const st = frame.s, fx = frame.f;
+  ctx.globalCompositeOperation = "lighter";
+  let flash = 0;
+  info.fixtures.forEach((f, i) => {
+    const s = fx[i]; if (!s) return;
+    const x = W * (0.05 + 0.9 * f.x);
+    const onFloor = f.y > 0.5;
+    const y = onFloor ? floorY - 6 : trussY + 4;
+    const c = { r: s.r, g: s.g, b: s.b }, a = s.i;
+    if (f.kind === "mover") {
+      const ang = Math.max(-1.35, Math.min(1.35, (s.pan - 0.5) * 7 + (s.tilt - 0.5) * 2.5 * (i % 2 ? 1 : -1)));
+      const len = (floorY - trussY) / Math.max(0.35, Math.cos(ang));
+      if (a > 0.01) {
+        const [ex, ey] = beam(x, y, ang, len, 3, 26, c, 0.55 * a);
+        if (ey >= floorY - 2) glow(ex, floorY, 50, c, 0.35 * a);
+      }
+      glow(x, y, 14, c, 0.9 * a + 0.05);
+      ctx.globalCompositeOperation = "source-over";
+      ctx.fillStyle = "#2b2d3c"; ctx.fillRect(x - 9, y - 12, 18, 10);
+      ctx.globalCompositeOperation = "lighter";
+    } else if (f.kind === "strobe") {
+      flash = Math.max(flash, a);
+      ctx.fillStyle = rgba({ r: 1, g: 1, b: 1 }, 0.15 + 0.85 * a);
+      ctx.fillRect(x - 16, y - 2, 32, 8);
+      if (a > 0.05) glow(x, y, 90, { r: 1, g: 1, b: 1 }, 0.6 * a);
+    } else {
+      if (onFloor) {
+        if (a > 0.01) beam(x, y, Math.PI, floorY - trussY * 0.4, 6, 40, c, 0.35 * a);
+      } else if (a > 0.01) {
+        beam(x, y, 0, floorY - trussY, 6, 60, c, 0.3 * a);
+        glow(x, floorY, 70, c, 0.3 * a);
+      }
+      glow(x, y, 16, c, 0.95 * a + 0.04);
+    }
+  });
+  if (flash > 0.05) { ctx.fillStyle = `rgba(255,255,255,${0.12 * flash})`; ctx.fillRect(0, 0, W, H); }
+  ctx.globalCompositeOperation = "source-over";
+  updateHud(st, frame.c);
+}
+
+function updateHud(st, c) {
+  const col = SEC_COLORS[st.section] || "#fff";
+  const sn = $("secname");
+  sn.textContent = (c.forced ? "⚑ " : "") + st.section; sn.style.color = col;
+  const pr = $("progress"); pr.style.color = col; pr.firstChild.style.width = (st.section_progress * 100) + "%";
+  $("bpm").firstChild.nodeValue = st.bpm ? st.bpm.toFixed(1) : "---";
+  const beatIdx = Math.floor(st.beat_in_bar) % 4, frac = st.beat_in_bar % 1;
+  document.querySelectorAll(".dots i").forEach((d, i) => d.classList.toggle("on", i === beatIdx && frac < 0.5));
+  const lk = $("lock");
+  if (info.mode === "live") { lk.textContent = st.locked ? "● LOCKED" : "○ LISTENING"; lk.style.color = st.locked ? "#4ade80" : "#8a8ca3"; }
+  for (const k of ["low", "mid", "high", "energy"]) $("m-" + k).style.height = (st[k] * 100) + "%";
+  for (const k of ["kick", "snare", "hat"]) {
+    const v = st[k]; $("h-" + k).style.background = `rgba(255,255,255,${v})`; $("h-" + k).style.boxShadow = v > 0.3 ? `0 0 ${12 * v}px #fff` : "none";
+  }
+  $("b-blackout").classList.toggle("on", c.blackout);
+  $("b-strobe").classList.toggle("on", c.strobe);
+  document.querySelectorAll("[data-force]").forEach(b => b.classList.toggle("on", (c.forced || "") === b.dataset.force && info.mode === "live"));
+  if (info.mode === "file") {
+    $("playhead").style.left = (st.t / info.duration * 100) + "%";
+    $("clock").textContent = fmt(st.t) + " / " + fmt(info.duration) + (st.playing ? "" : "  ❚❚");
+  } else {
+    $("clock").textContent = "bar " + st.bar;
+  }
+}
+init();
+</script>
+</body>
+</html>

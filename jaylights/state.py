@@ -46,6 +46,9 @@ class MusicState:
     def to_dict(self) -> dict:
         d = asdict(self)
         for k, v in d.items():
+            if hasattr(v, "item"):  # numpy scalar -> plain python
+                v = v.item()
             if isinstance(v, float):
-                d[k] = round(v, 4)
+                v = round(v, 4)
+            d[k] = v
         return d
