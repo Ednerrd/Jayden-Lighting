@@ -213,7 +213,9 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             lo = out[-1].start_bar
         t = tension[a:b]
         length = b - a
-        if not f and length <= 8 and _slope(t) >= 0:
+        if not f and length <= 8:
+            # a short dip (<= 2 phrases) right before a drop IS the build, even when the
+            # last bar is a near-silent gap that makes tension look like it's falling
             blen = length
         else:
             search = t[:-2] if length > 4 else t

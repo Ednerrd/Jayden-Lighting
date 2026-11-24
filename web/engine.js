@@ -348,7 +348,7 @@
       if (nxt !== DROP || kind === DROP) { out.push({ kind, start: a, end: b }); return; }
       let lo = a; if (out.length && last().kind !== DROP) lo = last().start;
       const t = tension.slice(a, b), length = b - a; let blen;
-      if (!f && length <= 8 && slope(t) >= 0) blen = length;
+      if (!f && length <= 8) blen = length;  // short dip right before a drop = the build
       else {
         const search = length > 4 ? t.slice(0, -2) : t, mn = Math.min(...search), floor = mn + 0.25 * (Math.max(...t) - mn);
         let lastCalm = 0; search.forEach((v, j) => { if (v <= floor) lastCalm = j; });
