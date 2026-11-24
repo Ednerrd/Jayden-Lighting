@@ -127,6 +127,14 @@
       <button id="m-pre" data-mode="pre" aria-pressed="true">Pre-analyzed</button>
       <button id="m-live" data-mode="live" aria-pressed="false">Live</button>
     </div>
+    <label for="dropStyle" class="label">Drop style</label>
+    <select id="dropStyle" aria-label="Drop style">
+      <option value="auto">Auto (rotates by genre)</option>
+      <option value="pump">Pump</option><option value="chase">Chase</option><option value="split">Split</option>
+      <option value="strobe_hell">Strobe hell</option><option value="fan_blast">Fan blast</option>
+      <option value="rainbow_chase">Rainbow chase</option><option value="blackout_stabs">Blackout stabs</option>
+      <option value="sweep">Sweep</option><option value="half_time_heavy">Half-time heavy</option>
+    </select>
   </div>
 
   <div class="dropzone" id="dropzone">
@@ -193,7 +201,7 @@
     </div>
   </div>
 
-  <p class="notes"><b>What you're looking at:</b> the virtual rig has 8 RGBW pars on the truss, 4 moving heads, 2 strobes and 6 floor uplights. Every light value here came out of the same code that drives real DMX. The two test tracks are synthesized, so their "real structure" lane is known exactly. Your own tracks get analyzed on this device with the same code, ported from Python. <b>Pre-analyzed</b> reads the whole song first and blacks out the beat before each drop. <b>Live</b> hears it as it plays, so its colors in the bottom lane show when it figured each section out.</p>
+  <p class="notes"><b>What you're looking at:</b> the virtual rig has 8 RGBW pars on the truss, 4 moving heads, 2 strobes and 6 floor uplights. Every light value here came out of the same code that drives real DMX. The two test tracks are synthesized (and analyzed here in the browser, like yours), so their "real structure" lane is known exactly. Your own tracks get analyzed on this device with the same code, ported from Python. <b>Pre-analyzed</b> reads the whole song first and blacks out the beat before each drop. <b>Live</b> hears it as it plays, so its colors in the bottom lane show when it figured each section out.</p>
 </div>
 
 <script src="engine.js"></script>
@@ -201,7 +209,8 @@
 const SEC_COL = { intro: "#6b7cff", groove: "#22d3ee", breakdown: "#a78bfa", build: "#fbbf24", drop: "#f43f5e", outro: "#64748b" };
 const $ = id => document.getElementById(id);
 const cv = $("cv"), ctx = cv.getContext("2d");
-let meta = null, cache = {}, show = null, track = "house", mode = "pre";
+let meta = null, cache = {}, show = null, track = "house", mode = "pre", dropStyle = "auto";
+const DEMO_GENRE = { house: "house", dubstep: "dubstep" };
 let audio = new Audio(), started = false, blackout = false, strobes = true;
 let W = 0, H = 0;
 
@@ -214,15 +223,35 @@ function resize() {
 }
 new ResizeObserver(resize).observe(cv);
 
+// Decodes audio to a mono Float32Array.
+async function decodeMono(buf) {
+  const AC = window.AudioContext || window.webkitAudioContext, ac = new AC();
+  const decoded = await new Promise((res, rej) => ac.decodeAudioData(buf, res, rej));
+  if (ac.close) ac.close();
+  const n = decoded.length, mono = new Float32Array(n);
+  for (let c = 0; c < decoded.numberOfChannels; c++) { const d = decoded.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / decoded.numberOfChannels; }
+  return { mono, sr: decoded.sampleRate, duration: decoded.duration };
+}
+const ANALYSIS_STEPS = { "Listening": [0.05, 0.45], "Finding the beat and the drops": [0.45, 0.55], "Simulating live mode": [0.55, 1] };
+const analysisProgress = async (label, p) => { const [a, b] = ANALYSIS_STEPS[label] || [0, 1]; busy(label, a + (b - a) * p); await yieldUI(); };
+// Music states are analyzed once per track; the lights are re-rendered from them whenever the drop style changes.
+function renderShows(entry) {
+  entry.out = { pre: Jaylights.renderShow(entry.states.pre, entry.genre, dropStyle), live: Jaylights.renderShow(entry.states.live, entry.genre, dropStyle) };
+}
 async function loadTrack(key) {
   if (!cache[key]) {
-    const [js, mp3] = await Promise.all([fetch(key + "_show.json").then(r => r.json()), fetch(key + ".mp3").then(r => r.blob())]);
-    cache[key] = {
-      pre: { fx: b64(js.pre.fx), st: b64(js.pre.st) },
-      live: { fx: b64(js.live.fx), st: b64(js.live.st) },
-      url: URL.createObjectURL(mp3),
-    };
+    $("start").hidden = true; busy("Loading", 0.02, "Analyzing the test track on this device");
+    try {
+      const blob = await fetch(key + ".mp3").then(r => r.blob());
+      const { mono, sr } = await decodeMono(await blob.arrayBuffer());
+      const r = await Jaylights.analyzeTrack(mono, sr, DEMO_GENRE[key], analysisProgress);
+      // keep the known truth (and nominal bpm) from meta.json, take the detected lanes from this analysis
+      const t = meta.tracks[key];
+      Object.assign(t, { frames: r.track.frames, detected_bpm: r.track.detected_bpm, offline_sections: r.track.offline_sections, live_sections: r.track.live_sections });
+      cache[key] = { states: r.states, genre: DEMO_GENRE[key], url: URL.createObjectURL(blob) };
+    } finally { $("busy").hidden = true; $("start").hidden = started; }
   }
+  if (!cache[key].out) renderShows(cache[key]);
   return cache[key];
 }
 
@@ -240,16 +269,23 @@ function lane(el, secs, dur) {
 async function selectTrack(key) {
   track = key;
   document.querySelectorAll("[data-track]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.track === key)));
+  show = null;
+  await loadTrack(key);
+  if (track !== key) return;
   const t = meta.tracks[key];
   $("truthRow").hidden = !t.truth;
   if (t.truth) lane($("lane-truth"), t.truth, t.duration);
   lane($("lane-pre"), t.offline_sections, t.duration); lane($("lane-live"), t.live_sections, t.duration);
   $("dbpm").textContent = t.detected_bpm + " BPM" + (t.truth ? " (actual " + t.bpm + ")" : "");
-  show = await loadTrack(key);
+  show = cache[key];
   const wasPlaying = started && !audio.paused;
   audio.src = show.url; audio.currentTime = 0;
   if (wasPlaying) audio.play();
 }
+function selectDropStyle(v) {
+  dropStyle = v; if (show) renderShows(show);
+}
+$("dropStyle").onchange = e => selectDropStyle(e.target.value);
 function selectMode(m) {
   mode = m; document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
 }
@@ -296,11 +332,11 @@ function draw() {
   ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = "#0a0a12"; ctx.fillRect(0, floorY, W, H - floorY);
   ctx.fillStyle = "#1c1d28"; ctx.fillRect(W * 0.03, trussY - 6, W * 0.94, 7);
-  if (!show) return;
+  if (!show || !show.out) return;
 
   const t = meta.tracks[track], nF = meta.fixtures.length;
   const fi = Math.min(t.frames - 1, Math.max(0, Math.floor(audio.currentTime * meta.fps)));
-  const data = show[mode], fx = data.fx, st = data.st, so = fi * 13;
+  const data = show.out[mode], fx = data.fx, st = data.st, so = fi * 13;
   ctx.globalCompositeOperation = "lighter";
   let flash = 0;
   meta.fixtures.forEach((f, i) => {
@@ -356,19 +392,12 @@ async function useFile(file) {
   try {
     busy("Loading", 0.02, file.name);
     const buf = await file.arrayBuffer();
-    const AC = window.AudioContext || window.webkitAudioContext, ac = new AC();
-    const decoded = await new Promise((res, rej) => ac.decodeAudioData(buf, res, rej));
-    if (ac.close) ac.close();
-    if (decoded.duration > 15 * 60) throw new Error("That file is over 15 minutes. Try a single track rather than a full mix.");
-    const n = decoded.length, mono = new Float32Array(n);
-    for (let c = 0; c < decoded.numberOfChannels; c++) { const d = decoded.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / decoded.numberOfChannels; }
-    const steps = { "Listening": [0.05, 0.45], "Finding the beat and the drops": [0.45, 0.55], "Simulating live mode": [0.55, 1] };
-    const r = await Jaylights.analyzeTrack(mono, decoded.sampleRate, $("genre").value, async (label, p) => {
-      const [a, b] = steps[label] || [0, 1]; busy(label, a + (b - a) * p); await yieldUI();
-    });
+    const { mono, sr, duration } = await decodeMono(buf);
+    if (duration > 15 * 60) throw new Error("That file is over 15 minutes. Try a single track rather than a full mix.");
+    const r = await Jaylights.analyzeTrack(mono, sr, $("genre").value, analysisProgress);
     if (cache.mine && cache.mine.url) URL.revokeObjectURL(cache.mine.url);
     meta.tracks.mine = r.track;
-    cache.mine = { pre: r.pre, live: r.live, url: URL.createObjectURL(file) };
+    cache.mine = { states: r.states, genre: $("genre").value, url: URL.createObjectURL(file) };
     const name = file.name.replace(/\.[^.]+$/, "");
     $("t-mine").hidden = false; $("t-mine").textContent = name.length > 24 ? name.slice(0, 23) + "\u2026" : name;
     await selectTrack("mine");
@@ -389,7 +418,7 @@ document.addEventListener("drop", e => { const f = e.dataTransfer && e.dataTrans
 
 (async () => {
   meta = await fetch("meta.json").then(r => r.json());
-  await selectTrack("house");
   requestAnimationFrame(draw);
+  await selectTrack("house");
 })();
 </script>

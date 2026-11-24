@@ -592,6 +592,19 @@
     trance: [[125, 145], "mixed", "cool", 0.9, 0.7], dubstep: [[134, 156], "acid", "cool", 1.0, 1.0],
     trap: [[125, 165], "hot", "cool", 1.0, 1.0], dnb: [[160, 182], "acid", "cool", 1.0, 0.9],
   };
+  // Drop styles: first beat of every drop is the white impact in all of them. "auto" rotates a genre
+  // subset every 8 bars (32 beats); ctl.dropStyle locks one.
+  const DROP_STYLES = ["pump", "chase", "split", "strobe_hell", "fan_blast", "rainbow_chase", "blackout_stabs", "sweep", "half_time_heavy"];
+  const DROP_ROTATION = {
+    auto: ["pump", "chase", "split", "fan_blast", "rainbow_chase", "sweep"],
+    house: ["pump", "rainbow_chase", "sweep", "chase"],
+    progressive: ["sweep", "rainbow_chase", "pump", "chase"],
+    techno: ["pump", "strobe_hell", "chase", "blackout_stabs"],
+    trance: ["sweep", "rainbow_chase", "pump", "fan_blast"],
+    dubstep: ["half_time_heavy", "strobe_hell", "blackout_stabs", "fan_blast"],
+    trap: ["half_time_heavy", "blackout_stabs", "strobe_hell", "fan_blast"],
+    dnb: ["fan_blast", "chase", "strobe_hell", "pump"],
+  };
   function demoRig() {
     const fx = [];
     for (let i = 0; i < 8; i++) fx.push({ name: "Par " + (i + 1), kind: "wash", group: "front", y: 0, rgb: true });
@@ -608,7 +621,7 @@
   }
   class ShowEngine {
     constructor(fixtures, genre = "auto", seed = 1) {
-      this.fx = fixtures; const g = GENRES[genre] || GENRES.auto;
+      this.fx = fixtures; this.genre = GENRES[genre] ? genre : "auto"; const g = GENRES[this.genre]; this.style = "pump"; this.hzCap = 10;
       [, this.dropPal, this.calmPal, this.strobeAmt, this.snareAmt] = g;
       let s = seed >>> 0; this.rand = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
       this.secIdx = -1; this.palette = [hsv(0), hsv(240)]; this.smooth = fixtures.map(() => ({ pan: 0.5, tilt: 0.5 })); this.first = true;
@@ -618,7 +631,13 @@
       const hues = list[Math.floor(this.rand() * list.length)];
       this.palette = hues.map(h => kind === BREAKDOWN ? hsv(h, 0.9, 0.9) : hsv(h));
     }
+    dropStyleAt(sectionBeats, setting = "auto") {
+      if (DROP_STYLES.includes(setting)) return setting;
+      const rot = DROP_ROTATION[this.genre]; return rot[Math.floor(sectionBeats / 32) % rot.length];
+    }
     render(st, ctl) {
+      this.hzCap = ctl.strobeEnabled === false ? 2 : ctl.maxStrobe;   // wash flashing obeys the strobe safety too
+      if (st.section === DROP) this.style = this.dropStyleAt(st.section_beats, ctl.dropStyle);
       if (st.section_index !== this.secIdx) { this.secIdx = st.section_index; if (st.section !== BUILD) this.pick(st.section); }
       const out = this.fx.map(f => ({ i: 0, c: [1, 1, 1], hz: 0, pan: f.pan_center, tilt: f.tilt_center }));
       const look = st.section === DROP ? this.drop : st.section === BUILD ? this.build : st.section === BREAKDOWN ? this.breakdown : this.groove;
@@ -657,25 +676,81 @@
       }
     }
     drop(st, f, o) {
-      const sb = st.section_beats, A = this.palette[0], B = this.palette[this.palette.length - 1];
-      if (sb < 1) { o.c = WHITE; o.i = f.kind !== "strobe" ? 1 - 0.5 * sb : 1 - sb; this.move(f, o, 0, -0.4); return; }
-      const v = mod(Math.floor(sb / 32), 3), bi = Math.floor(st.beat), k = st.kick;
+      const sb = st.section_beats;
+      if (sb < 1) { o.c = WHITE; o.i = f.kind !== "strobe" ? 1 - 0.5 * sb : 1 - sb; this.move(f, o, 0, -0.4); return; }   // IMPACT, every style
+      this["d_" + this.style](st, f, o);
+    }
+    // ---- drop styles (mirror show.py exactly). Each handles every fixture kind so any rig subset looks good.
+    flashDiv(st, want) { let d = want; while (d > 1 && st.bpm / 60 * d > this.hzCap) d = Math.floor(d / 2); return d; }
+    d_pump(st, f, o) {
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick;
+      if (f.kind === "wash") { o.c = mod(bi + f.index, 2) === 0 ? A : B; o.i = Math.max(0.15 + 0.85 * k, st.snare * this.snareAmt * 0.9); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; this.move(f, o, (f.index % 2 ? -1 : 1) * Math.sin(2 * Math.PI * st.beat / 4), -0.5 + 0.8 * k); }
+      else if (f.kind === "strobe") { o.i = this.strobeAmt * Math.max(st.snare ** 2 * this.snareAmt, k ** 4 * 0.5); o.c = WHITE; }
+    }
+    d_chase(st, f, o) {
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick;
       if (f.kind === "wash") {
-        if (v === 0) { o.c = mod(bi + f.index, 2) === 0 ? A : B; o.i = 0.15 + 0.85 * k; }
-        else if (v === 1) {
-          const n = Math.max(1, f.group_size), step = mod(Math.floor(st.beat * 2), n > 2 ? 2 * n - 2 : n), pos = step < n ? step : 2 * n - 2 - step;
-          o.c = mod(Math.floor(bi / 2), 2) === 0 ? A : B; o.i = Math.max(pos === f.index ? 1 : 0.1, 0.5 * k);
-        } else { const left = f.x < 0.5, on = left === (mod(bi, 2) === 0); o.c = on ? A : B; o.i = on ? 0.3 + 0.7 * k : 0.15 * k; }
-        o.i = Math.max(o.i, st.snare * this.snareAmt * 0.9);
+        const n = Math.max(1, f.group_size), step = mod(Math.floor(st.beat * 2), n > 2 ? 2 * n - 2 : n), pos = step < n ? step : 2 * n - 2 - step;
+        o.c = mod(Math.floor(bi / 2), 2) === 0 ? A : B; o.i = Math.max(pos === f.index ? 1 : 0.1, 0.5 * k, st.snare * this.snareAmt * 0.9);
+      } else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; const a = 2 * Math.PI * (st.beat / 4 + f.index * 0.25); this.move(f, o, Math.sin(a), Math.cos(a) * 0.8); }
+      else if (f.kind === "strobe") { o.i = st.beat_in_bar < 0.15 ? this.strobeAmt : 0; o.c = WHITE; }
+    }
+    d_split(st, f, o) {
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick;
+      if (f.kind === "wash") { const on = (f.x < 0.5) === (mod(bi, 2) === 0); o.c = on ? A : B; o.i = Math.max(on ? 0.3 + 0.7 * k : 0.15 * k, st.snare * this.snareAmt * 0.9); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; this.move(f, o, (mod(bi + f.index, 2) ? 1 : -1) * 0.9, 0.2); }
+      else if (f.kind === "strobe") { o.i = this.strobeAmt * Math.max(st.snare ** 2 * this.snareAmt, k ** 4 * 0.5); o.c = WHITE; }
+    }
+    d_strobe_hell(st, f, o) {   // washes + strobes flash on every 8th (16ths on the last bar of 4), capped by the strobe-rate limit
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], k = st.kick;
+      const div = this.flashDiv(st, mod(st.bar, 4) === 3 ? 4 : 2), sub = st.beat * div, n = Math.floor(sub), on = mod(sub, 1) < 0.5;
+      if (f.kind === "wash") { o.c = n % 2 === 0 ? A : B; o.i = on ? 1 : 0.04 + 0.2 * k; }
+      else if (f.kind === "mover") {
+        o.c = on && n % 4 === 0 ? WHITE : (f.index % 2 ? B : A); o.i = on ? 1 : 0.2;
+        this.move(f, o, ((n + f.index) % 2 ? 1 : -1) * 0.7, 0.3);
+      } else if (f.kind === "strobe") { o.c = WHITE; o.i = Math.max(this.strobeAmt, 0.8) * (0.6 + 0.4 * k); o.hz = st.bpm / 60 * div; }
+    }
+    d_fan_blast(st, f, o) {     // movers fan out from centre on each kick then snap back; washes burst outward
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick, c = bi % 2 === 0 ? A : B;
+      if (f.kind === "wash") {
+        const dist = Math.abs(f.x - 0.5) * 2, fan = Math.min(1, Math.max(0, k * 1.6 - dist * 0.9 + 0.25));
+        o.c = mix(c, WHITE, 0.6 * st.snare); o.i = Math.max(0.08, fan, st.snare * this.snareAmt * 0.9);
       } else if (f.kind === "mover") {
-        o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; const mir = f.index % 2 ? -1 : 1;
-        if (v === 0) this.move(f, o, mir * Math.sin(2 * Math.PI * st.beat / 4), -0.5 + 0.8 * k);
-        else if (v === 1) { const a = 2 * Math.PI * (st.beat / 4 + f.index * 0.25); this.move(f, o, Math.sin(a), Math.cos(a) * 0.8); }
-        else this.move(f, o, (mod(bi + f.index, 2) ? 1 : -1) * 0.9, 0.2);
-      } else if (f.kind === "strobe") {
-        o.i = v === 1 ? (st.beat_in_bar < 0.15 ? this.strobeAmt : 0) : this.strobeAmt * Math.max(st.snare ** 2 * this.snareAmt, k ** 4 * 0.5);
-        o.c = WHITE;
-      }
+        o.c = f.index % 2 === 0 ? c : (bi % 2 === 0 ? B : A); o.i = 0.4 + 0.6 * k;
+        this.move(f, o, (f.x - 0.5) * 2 * k * 1.1, -0.2 + 0.6 * k);
+      } else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * Math.max(st.snare ** 2 * this.snareAmt, k ** 6 * 0.6); }
+    }
+    d_rainbow_chase(st, f, o) { // hue rolls across the rig by x while a comet chases on 1/2 beats
+      const k = st.kick, hue = f.x * 300 + st.beat * 40;
+      if (f.kind === "wash") {
+        const n = Math.max(1, f.group_size), head = mod(Math.floor(st.beat * 2), n), d = mod(head - f.index, n), tail = Math.max(0, 1 - d / Math.max(2, n / 2));
+        o.c = hsv(hue); o.i = Math.max(0.12 + 0.88 * tail * (0.65 + 0.35 * k), st.snare * this.snareAmt * 0.8);
+      } else if (f.kind === "mover") {
+        o.c = hsv(hue + 120); o.i = 0.6 + 0.4 * k; const ph = f.x * 0.5;
+        this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 8 + ph)) * 0.8, 0.1 + 0.4 * Math.sin(2 * Math.PI * (st.beat / 4 + ph)));
+      } else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * (st.beat_in_bar < 0.15 ? 1 : 0.5 * st.snare ** 2); }
+    }
+    d_blackout_stabs(st, f, o) { // dark except hard cut-off stabs on every kick + snare
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick, sn = st.snare;
+      let v = Math.max(k, sn); v = v > 0.4 ? v : 0;
+      if (f.kind === "wash") { o.c = sn > k ? mix(B, WHITE, 0.7) : A; o.i = v; }
+      else if (f.kind === "mover") { o.c = sn > k ? WHITE : (f.index % 2 ? B : A); o.i = v; this.move(f, o, (mod(bi + f.index, 2) ? 1 : -1) * 0.9, 0.3); }
+      else if (f.kind === "strobe") { o.c = WHITE; o.i = sn > 0.5 ? this.strobeAmt : 0; }
+    }
+    d_sweep(st, f, o) {         // smooth + slow: wide mover arcs, washes crossfade colour in a travelling wave
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], k = st.kick;
+      if (f.kind === "wash") { o.c = mix(A, B, wave(f.x * 0.6 + st.beat / 16)); o.i = Math.max(0.4 + 0.35 * wave(st.beat / 8 - f.x * 0.5) + 0.25 * k, st.snare * 0.5); }
+      else if (f.kind === "mover") {
+        o.c = mix(B, A, wave(st.beat / 16 + f.index * 0.25)); o.i = 0.6 + 0.3 * k;
+        this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 16 + f.index * 0.125)) * 0.9, 0.1 + 0.5 * Math.sin(2 * Math.PI * (st.beat / 32 + f.index * 0.2)));
+      } else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * 0.6 * Math.max(st.snare ** 2, k ** 4); }
+    }
+    d_half_time_heavy(st, f, o) { // kick = solid hit, snare = huge slam + strobes; slow movers snap up on the snare
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], k = st.kick, sn = st.snare;
+      if (f.kind === "wash") { o.c = sn > k ? mix(B, WHITE, 0.5 * sn) : A; o.i = Math.max(0.12 + 0.5 * k ** 1.5, sn * this.snareAmt); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.4 + 0.6 * Math.max(k, sn); this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 16 + f.index * 0.25)) * 0.7, 0.2 + 0.7 * sn); }
+      else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * sn ** 2; o.hz = sn > 0.5 ? 14 : 0; }
     }
     post(st, ctl, out) {
       const a = st.section === BREAKDOWN ? 0.08 : 0.3;
@@ -697,47 +772,62 @@
 
   // ---------------------------------------------------------------- whole pipeline
   const FPS = 30;
-  function pack(rig, eng, states, fxOut, stOut, frame) {
-    const ctl = { maxStrobe: 10 };
-    const st = states, outs = eng.render(st, ctl), t = frame / FPS;
+  // Writes one frame of fixture bytes (6 per fixture: i r g b pan tilt) for music state `st`.
+  function packFx(rig, outs, frame, t, fxOut) {
     rig.forEach((f, j) => {
       const e = effective(f, outs[j], t), o = (frame * rig.length + j) * 6;
       for (let q = 0; q < 6; q++) fxOut[o + q] = Math.round(clamp(e[q], 0, 1) * 255);
     });
+  }
+  // Writes one frame of music-state bytes (13 per frame).
+  function packSt(st, frame, stOut) {
     const so = frame * 13, bpm10 = Math.round(st.bpm * 10);
     stOut[so] = Math.max(0, SECTIONS.indexOf(st.section)); stOut[so + 1] = Math.floor(st.beat_in_bar * 60) % 240;
     stOut[so + 2] = (bpm10 >> 8) & 255; stOut[so + 3] = bpm10 & 255;
     [st.section_progress, st.kick, st.snare, st.hat, st.low, st.mid, st.high, st.energy].forEach((v, q) => stOut[so + 4 + q] = Math.round(clamp(v, 0, 1) * 255));
     stOut[so + 12] = st.locked ? 1 : 0;
   }
+  const STATE_KEYS = ["bpm", "beat", "beat_in_bar", "bar", "section_index", "section_beats", "section_progress", "beats_to_next", "energy", "low", "mid", "high", "kick", "snare", "hat"];
+  function snapshot(st) {   // a plain copy of the music state (what the show engine reads)
+    const o = { section: st.section, next_section: st.next_section, locked: st.locked };
+    for (const k of STATE_KEYS) o[k] = st[k]; return o;
+  }
+  // Re-renders the show for a sequence of per-frame music states (30 fps). Returns {fx, st} in the same byte layout
+  // the page decodes from the demo JSON: fx = frames*fixtures*6 bytes, st = frames*13 bytes.
+  function renderShow(states, genre, dropStyle = "auto", opts = {}) {
+    const rig = opts.rig || demoRig(), frames = states.length, ctl = { maxStrobe: opts.maxStrobe || 10, dropStyle };
+    const out = { fx: new Uint8Array(frames * rig.length * 6), st: new Uint8Array(frames * 13) }, eng = new ShowEngine(rig, genre);
+    for (let fi = 0; fi < frames; fi++) { const st = states[fi]; packFx(rig, eng.render(st, ctl), fi, fi / FPS, out.fx); packSt(st, fi, out.st); }
+    return out;
+  }
   async function analyzeTrack(x, sr, genre, progress = async () => {}) {
     const range = (GENRES[genre] || GENRES.auto)[0];
     const F = await extractFeatures(x, sr, p => progress("Listening", p));
     await progress("Finding the beat and the drops", 0);
     const tl = analyzeOffline(F, range);
-    const rig = demoRig(), dur = x.length / sr, frames = Math.floor(dur * FPS);
-    const pre = { fx: new Uint8Array(frames * rig.length * 6), st: new Uint8Array(frames * 13) };
-    let eng = new ShowEngine(rig, genre);
-    for (let fi = 0; fi < frames; fi++) { const st = tl.stateAt(fi / FPS + 0.03); pack(rig, eng, st, pre.fx, pre.st, fi); }
+    const dur = x.length / sr, frames = Math.floor(dur * FPS);
+    const preStates = [];
+    for (let fi = 0; fi < frames; fi++) preStates.push(snapshot(tl.stateAt(fi / FPS + 0.03)));
     // live: replay the features frame by frame, snapshot at each video frame
-    const live = { fx: new Uint8Array(frames * rig.length * 6), st: new Uint8Array(frames * 13) }, liveSecs = [];
-    const la = new LiveAnalyzer(sr, range, 0.03); eng = new ShowEngine(rig, genre); let fpos = 0, last = null;
+    const liveStates = [], liveSecs = [];
+    const la = new LiveAnalyzer(sr, range, 0.03); let fpos = 0, last = null;
     for (let fi = 0; fi < frames; fi++) {
       const t = fi / FPS;
       while (fpos < F.n && frameTime(fpos, sr) <= t) la.frameIn(F, fpos++);
-      const st = { ...la.st };
+      const st = snapshot(la.st);
       if (st.section !== last) { liveSecs.push({ kind: st.section, start: t }); last = st.section; }
-      pack(rig, eng, st, live.fx, live.st, fi);
+      liveStates.push(st);
       if (fi % 900 === 0) await progress("Simulating live mode", fi / frames);
     }
     liveSecs.forEach((s, i) => s.end = i + 1 < liveSecs.length ? liveSecs[i + 1].start : dur);
     return {
       track: { bpm: tl.bpm, detected_bpm: Math.round(tl.bpm * 100) / 100, duration: dur, frames,
         offline_sections: tl.sections.map(s => ({ kind: s.kind, start: s.start, end: s.end })), live_sections: liveSecs, truth: null },
-      pre, live, timeline: tl,
+      states: { pre: preStates, live: liveStates },     // keep these: renderShow(states, genre, style) re-renders cheaply
+      timeline: tl,
     };
   }
 
-  const api = { extractFeatures, analyzeOffline, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, frameTime, SECTIONS, GENRES, FPS };
+  const api = { extractFeatures, analyzeOffline, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Jaylights = api;
 })(typeof self !== "undefined" ? self : globalThis);

@@ -57,6 +57,7 @@
   button.danger.on { background: #dc2626; color: #fff; border-color: #ef4444; }
   button kbd { font: 10px ui-monospace, monospace; opacity: .55; margin-left: 4px; }
   .sep { width: 1px; height: 26px; background: var(--line); margin: 0 4px; }
+  .slider select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
   .slider { display: flex; align-items: center; gap: 6px; color: var(--dim); font-size: 12px; }
   input[type=range] { width: 110px; accent-color: #f8fafc; }
   .grow { flex: 1; }
@@ -99,6 +100,7 @@
     <button id="b-strobe" data-action="strobe">STROBES<kbd>S</kbd></button>
     <label class="slider">MASTER <input id="s-master" type="range" min="0" max="1" step="0.01" value="1"></label>
     <label class="slider">MOVE <input id="s-move" type="range" min="0" max="1" step="0.01" value="1"></label>
+    <label class="slider">DROP STYLE <select id="s-drop"><option value="auto">auto</option></select></label>
     <span class="sep"></span>
     <span id="filectl" style="display:none"><button data-action="pause">PLAY / PAUSE<kbd>SPACE</kbd></button></span>
     <span id="livectl" style="display:none">
@@ -137,6 +139,7 @@ document.querySelectorAll("[data-action]").forEach(b => b.onclick = () => send(b
 document.querySelectorAll("[data-force]").forEach(b => b.onclick = () => send("force", b.dataset.force));
 $("s-master").oninput = e => send("master", +e.target.value);
 $("s-move").oninput = e => send("movement", +e.target.value);
+$("s-drop").onchange = e => send("drop_style", e.target.value);
 window.addEventListener("keydown", e => {
   if (e.target.tagName === "INPUT") return;
   const k = e.key.toLowerCase();
@@ -152,6 +155,7 @@ function fmt(t) { t = Math.max(0, t); const m = Math.floor(t / 60), s = Math.flo
 
 async function init() {
   info = await (await fetch("/info")).json();
+  for (const n of info.drop_styles || []) { const o = document.createElement("option"); o.value = n; o.textContent = n.replace(/_/g, " "); $("s-drop").appendChild(o); }
   $("mode").textContent = info.mode === "live" ? "LIVE" : "TRACK";
   $("mode").classList.toggle("live", info.mode === "live");
   $("title").textContent = info.title || "";

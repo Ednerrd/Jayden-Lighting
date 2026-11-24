@@ -7,5 +7,9 @@ lets you drop in your own file, which gets analyzed in the browser.
 
 To run it locally:
 
-    python web/build_demo.py web      # makes the two demo tracks + meta.json
+    python web/build_demo.py web      # makes the two demo tracks (mp3) + meta.json with their known structure
     python -m http.server -d web 8000 # then open http://localhost:8000
+
+The page analyzes every track (demo and your own) in the browser, keeps the per-frame music
+states, and renders the lights from them with `Jaylights.renderShow(states, genre, dropStyle)`,
+so the **Drop style** picker re-renders the show instantly without re-analyzing.

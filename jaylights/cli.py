@@ -8,7 +8,7 @@ import sys
 import tempfile
 import time
 
-from .show import GENRES
+from .show import DROP_STYLES, GENRES
 
 
 def _genre_range(args):
@@ -55,7 +55,7 @@ def cmd_play(args):
     src = FileSource(args.file, tl, play_audio=not args.no_audio, start=args.start,
                      light_offset=args.offset / 1000)
     run_show(src, _rig(args), args.genre, args.http_port, not args.no_browser, title=os.path.basename(args.file),
-             max_seconds=args.seconds)
+             max_seconds=args.seconds, drop_style=args.drop_style)
 
 
 def cmd_live(args):
@@ -65,7 +65,8 @@ def cmd_live(args):
     src = LiveSource(device=args.device, loopback=args.loopback, sim_file=args.file,
                      bpm_range=_genre_range(args), latency=args.offset / 1000, play_sim=not args.no_audio)
     title = "simulated live: " + os.path.basename(args.file) if args.file else ("loopback" if args.loopback else f"input {args.device or 'default'}")
-    run_show(src, _rig(args), args.genre, args.http_port, not args.no_browser, title=title, max_seconds=args.seconds)
+    run_show(src, _rig(args), args.genre, args.http_port, not args.no_browser, title=title, max_seconds=args.seconds,
+             drop_style=args.drop_style)
 
 
 def cmd_demo(args):
@@ -183,6 +184,8 @@ def main(argv=None):
             p.add_argument("--no-strobe", action="store_true", help="disable strobing entirely")
             p.add_argument("--no-audio", action="store_true", help="don't play sound (show runs on the clock)")
             p.add_argument("--offset", type=float, default=30, help="fire lights this many ms early (DMX/LED lag)")
+            p.add_argument("--drop-style", choices=["auto", *DROP_STYLES], default="auto",
+                           help="drop look: auto rotates a genre-suited set every 8 bars, or lock one")
             p.add_argument("--seconds", type=float, help="stop after N seconds")
 
     p = sub.add_parser("analyze", help="analyze track(s) and print BPM + structure")

@@ -86,6 +86,7 @@ Leave it on `auto` for a minute at the start. The status shows **● LOCKED** on
 | **STROBES** `S` | Strobes on/off |
 | MASTER / MOVE sliders | Overall brightness / how much the movers move |
 | **AUTO / GROOVE / BREAK / BUILD / DROP** `0-4` | Override the section (live mode). Hit DROP yourself if you want it perfect. |
+| **DROP STYLE** dropdown | Lock one drop look, or leave on `auto` (see below) |
 | **TAP THE 1** `T` | Press on the first beat of a bar if the bar count is off |
 | **½ BEAT** `H` | Use this if the lights are pulsing on the offbeat |
 | PLAY/PAUSE `Space`, click the timeline to seek | Pre-analyzed mode |
@@ -94,6 +95,31 @@ Leave it on `auto` for a minute at the start. The status shows **● LOCKED** on
 `--genre` sets the tempo range and the vibe: `house`, `progressive`, `techno`, `trance`,
 `dubstep`, `trap`, `dnb`, or `auto`. For **dubstep and trap, set the genre**. The kick
 pattern in a half-time intro is ambiguous, and the genre range stops it reading 140 as 93.
+
+### Drop styles
+Every drop starts with the same white impact flash on the first beat. After that the look is a
+*drop style*. `--drop-style auto` (the default, also on `play`, `live` and `demo`) rotates through a set that
+suits your `--genre` every 8 bars. Or lock one with `--drop-style NAME`, or with the visualizer's
+**DROP STYLE** dropdown (changes instantly, mid-song).
+
+| Style | Looks like |
+|---|---|
+| `pump` | whole rig hits on every kick, colours swap each beat, movers fan in mirrored pairs |
+| `chase` | bouncing 1/2-beat chase across the lights, movers circling |
+| `split` | left vs right halves swap each beat, movers snap into a crossing X |
+| `strobe_hell` | strobes + washes flash on every 8th (16ths on every 4th bar), alternating colours |
+| `fan_blast` | on each kick the movers fan out from the middle and snap back, washes burst outward in full colour |
+| `rainbow_chase` | a rainbow rolls across the rig by position while a comet chases on 1/2 beats |
+| `blackout_stabs` | everything dark except hard cut-off stabs on every kick and snare |
+| `sweep` | slow, smooth mover sweeps and colour crossfades (melodic / progressive drops) |
+| `half_time_heavy` | solid hit on the kick, huge white-ish slam + strobe on the snare, slow movers (dubstep / trap) |
+
+Auto rotations: house `pump, rainbow_chase, sweep, chase`; progressive `sweep, rainbow_chase, pump, chase`;
+techno `pump, strobe_hell, chase, blackout_stabs`; trance `sweep, rainbow_chase, pump, fan_blast`;
+dubstep `half_time_heavy, strobe_hell, blackout_stabs, fan_blast`; trap `half_time_heavy, blackout_stabs, strobe_hell, fan_blast`;
+dnb `fan_blast, chase, strobe_hell, pump`. Every style works with any mix of lights (pars only, movers, strobes, floor
+uplights): each fixture type has its own part, so a mover-heavy style still hits hard on pars alone. Flash rates obey
+`max_strobe_hz`, and `--no-strobe` also stops the wash flashing from running faster than 2 per second.
 
 ### Tuning
 - Lights a bit late? Raise `--offset` (default 30 ms). It fires the lights earlier to cover DMX and LED lag.
@@ -110,7 +136,7 @@ sensitive are around.
 - **Features** (`analysis/features.py`): splits the audio into kick, bass, mid, snare and hat bands about 86 times a second, and measures loudness, brightness and how "noisy" it sounds (risers are noisy).
 - **Pre-analyzed** (`analysis/offline.py`, `beats.py`, `sections.py`): fits one rigid beat grid to the whole track, since EDM tempos don't drift. It finds "the 1" from where the chords change. Then it labels 4-bar phrases: kick plus top energy is a drop, no kick is a breakdown, and rising tension before a drop is a build.
 - **Live** (`analysis/live.py`): every 0.2 s it measures tempo and phase from the last 6 s of kicks and snares. It freezes the tempo during builds, because snare rolls lie. The first big kick after a build means DROP, which gets confirmed or taken back over the next 3 beats.
-- **Show** (`show.py`): one look per section, with genre palettes. The drop rotates through three variations every 8 bars.
+- **Show** (`show.py`): one look per section, with genre palettes. The drop picks a drop style (nine of them, auto-rotating by genre every 8 bars, or locked with `--drop-style`).
 - **DMX** (`dmx.py`, `fixtures.py`): turns each look into channel values per fixture profile.
 
 Run the tests with `python -m pytest -q`. They generate synthetic house, DnB and dubstep tracks
