@@ -28,6 +28,7 @@ fps = 40
 [safety]
 strobe = true          # false = never strobe (photosensitive guests, kids around)
 max_strobe_hz = 10     # cap on strobe speed
+blinders = true        # false = audience blinders stay dark (they are VERY bright: keep them low, never aim at eyes up close)
 master = 1.0           # overall brightness cap 0..1
 
 # ------------------------------ lights ------------------------------
@@ -80,12 +81,19 @@ profile = "strobe_2ch"
 address = 60
 x = 0.5
 
+# Audience blinders (kind "blinder", warm white, aimed at the crowd) are used sparingly:
+#   [[fixture]]
+#   name = "Blinder L"
+#   profile = "blinder_1ch"      # or blinder_4ch
+#   address = 70
+#   x = 0.3
+#
 # ------------------------- custom profiles -------------------------
 # Got a light that doesn't match? Copy its channel chart from the manual
 # (for the DMX mode you set on the fixture) into a profile like this:
 #
 # [profile.my_bar]
-# kind = "wash"                     # wash | mover | strobe | dimmer
+# kind = "wash"                     # wash | mover | strobe | dimmer | blinder
 # channels = ["dimmer", "red", "green", "blue", "strobe", "mode=0"]
 # strobe_range = [10, 255]          # DMX values for slow..fast strobe
 # strobe_off = 0                    # value meaning "no strobe" (some movers use 255 = shutter open)
@@ -102,6 +110,7 @@ type = "none"
 [safety]
 strobe = true
 max_strobe_hz = 10
+blinders = true
 ''' + "\n".join(
     f'[[fixture]]\nname = "Par {i + 1}"\nprofile = "rgbw_par_8ch"\naddress = {1 + i * 8}\ngroup = "front"\ny = 0.0\n'
     for i in range(8)
@@ -123,6 +132,9 @@ address = 202
 x = 0.9
 y = 0.0
 ''' + "\n".join(
+    f'[[fixture]]\nname = "Blinder {i + 1}"\nprofile = "blinder_1ch"\naddress = {210 + i}\ngroup = "blinders"\nx = {0.3 + i * 0.4:.1f}\ny = 0.0\n'
+    for i in range(2)
+) + "\n".join(
     f'[[fixture]]\nname = "Floor {i + 1}"\nprofile = "rgb_par_7ch"\naddress = {300 + i * 7}\ngroup = "floor"\ny = 1.0\n'
     for i in range(6)
 )
@@ -142,6 +154,10 @@ class Rig:
     @property
     def max_strobe_hz(self) -> float:
         return float(self.safety.get("max_strobe_hz", 10))
+
+    @property
+    def blinders_enabled(self) -> bool:
+        return bool(self.safety.get("blinders", True))
 
     @property
     def master(self) -> float:

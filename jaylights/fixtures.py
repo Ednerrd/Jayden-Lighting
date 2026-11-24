@@ -16,7 +16,18 @@ import colorsys
 import math
 from dataclasses import dataclass, field
 
-WASH, MOVER, STROBE, DIMMER = "wash", "mover", "strobe", "dimmer"
+WASH, MOVER, STROBE, DIMMER, BLINDER = "wash", "mover", "strobe", "dimmer", "blinder"
+
+# Audience blinders (2/4/8-lite warm white lamps aimed at the crowd) are white-only; the visualizer
+# shows them in this warm white whatever colour the engine hands them.
+BLINDER_COLOR = (1.0, 0.85, 0.6)
+
+# AIMING CONVENTION (movers): the show engine thinks in "dtilt" -1..+1 around the home position:
+#   tilt = tilt_center + dtilt * tilt_span * tilt_up
+# `tilt_up` is the direction (+1/-1 of the raw tilt value) that points at the CEILING, so
+#   dtilt > 0  -> aim UP (the classic build-up look)
+#   dtilt < 0  -> aim at the AUDIENCE (drop impact, crowd_sweep, snare slams); -1 = straight at the crowd
+# Home (tilt_center) is the default "out over the room" position.
 
 
 @dataclass
@@ -79,6 +90,10 @@ BUILTIN_PROFILES: dict[str, Profile] = {
         Profile("rgbwauv_par_10ch", WASH, ["dimmer", "red", "green", "blue", "white", "amber", "uv", "strobe", "mode=0", "speed=0"],
                 description="RGBWA+UV (6-in-1) LED par in 10CH mode"),
         Profile("rgbw_4ch", WASH, ["red", "green", "blue", "white"], description="RGBW, 4 channels, no dimmer"),
+        Profile("blinder_1ch", BLINDER, ["dimmer"],
+                description="Audience blinder (2/4/8-lite warm white), single dimmer channel"),
+        Profile("blinder_4ch", BLINDER, ["dimmer", "dimmer", "dimmer", "dimmer"],
+                description="4-cell audience blinder, one dimmer per cell (all cells driven together)"),
         Profile("strobe_2ch", STROBE, ["dimmer", "strobe"], description="LED strobe: dimmer + strobe speed"),
         Profile("strobe_1ch", STROBE, ["dimmer"], description="Strobe/blinder with only a dimmer (strobing done in software)"),
         Profile("mover_spot_9ch", MOVER,
@@ -218,7 +233,9 @@ class Fixture:
         if st.strobe_hz > 0 and (t * st.strobe_hz) % 1.0 > 0.3:
             inten = 0.0
         r, g, b = st.r, st.g, st.b
-        if self.profile.color_wheel:
+        if self.kind == BLINDER:
+            r, g, b = BLINDER_COLOR
+        elif self.profile.color_wheel:
             v = self._wheel_value(r, g, b)
             r, g, b = next(c for val, c in self.profile.color_wheel if val == v)
         elif not ({"red", "green", "blue"} & self.profile.has):

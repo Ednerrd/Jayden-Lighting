@@ -690,22 +690,26 @@
   };
   // Drop styles: first beat of every drop is the white impact in all of them. "auto" rotates a genre
   // subset every 8 bars (32 beats); ctl.dropStyle locks one.
-  const DROP_STYLES = ["pump", "chase", "split", "strobe_hell", "fan_blast", "rainbow_chase", "blackout_stabs", "sweep", "half_time_heavy"];
+  const DROP_STYLES = ["pump", "chase", "split", "strobe_hell", "fan_blast", "rainbow_chase", "blackout_stabs", "sweep", "half_time_heavy", "crowd_sweep"];
   const DROP_ROTATION = {
-    auto: ["pump", "chase", "split", "fan_blast", "rainbow_chase", "sweep"],
-    house: ["pump", "rainbow_chase", "sweep", "chase"],
-    progressive: ["sweep", "rainbow_chase", "pump", "chase"],
-    techno: ["pump", "strobe_hell", "chase", "blackout_stabs"],
-    trance: ["sweep", "rainbow_chase", "pump", "fan_blast"],
-    dubstep: ["half_time_heavy", "strobe_hell", "blackout_stabs", "fan_blast"],
-    trap: ["half_time_heavy", "blackout_stabs", "strobe_hell", "fan_blast"],
+    auto: ["pump", "chase", "split", "fan_blast", "crowd_sweep", "rainbow_chase", "sweep"],
+    house: ["pump", "crowd_sweep", "rainbow_chase", "sweep", "chase"],
+    progressive: ["sweep", "crowd_sweep", "rainbow_chase", "pump", "chase"],
+    techno: ["pump", "crowd_sweep", "strobe_hell", "chase", "blackout_stabs"],
+    trance: ["sweep", "crowd_sweep", "rainbow_chase", "pump", "fan_blast"],
+    dubstep: ["half_time_heavy", "strobe_hell", "crowd_sweep", "blackout_stabs", "fan_blast"],
+    trap: ["half_time_heavy", "blackout_stabs", "crowd_sweep", "strobe_hell", "fan_blast"],
     dnb: ["fan_blast", "chase", "strobe_hell", "pump"],
   };
+  // Audience blinders are warm white whatever the engine says. Mover aiming: move(f, o, dpan, dtilt) -- dtilt > 0 aims UP
+  // at the ceiling (builds), dtilt < 0 aims at the AUDIENCE (-1 = straight at the crowd); same convention as show.py.
+  const BLINDER_COLOR = [1.0, 0.85, 0.6];
   function demoRig() {
     const fx = [];
     for (let i = 0; i < 8; i++) fx.push({ name: "Par " + (i + 1), kind: "wash", group: "front", y: 0, rgb: true });
     for (let i = 0; i < 4; i++) fx.push({ name: "Mover " + (i + 1), kind: "mover", group: "movers", x: 0.2 + i * 0.2, y: 0, pan_span: 0.12, tilt_span: 0.18, rgb: true });
     fx.push({ name: "Strobe L", kind: "strobe", group: "strobe", x: 0.1, y: 0 }, { name: "Strobe R", kind: "strobe", group: "strobe", x: 0.9, y: 0 });
+    for (let i = 0; i < 2; i++) fx.push({ name: "Blinder " + (i + 1), kind: "blinder", group: "blinders", x: i ? 0.7 : 0.3, y: 0 });
     for (let i = 0; i < 6; i++) fx.push({ name: "Floor " + (i + 1), kind: "wash", group: "floor", y: 1, rgb: true });
     const groups = {};
     for (const f of fx) { Object.assign(f, { pan_center: 0.5, tilt_center: 0.5, tilt_up: -1, pan_span: f.pan_span || 0.15, tilt_span: f.tilt_span || 0.15 }); (groups[f.group] = groups[f.group] || []).push(f); }
@@ -758,6 +762,7 @@
     build(st, f, o) {
       const p = st.section_progress;
       if (st.next_section === DROP && st.beats_to_next !== null && st.beats_to_next <= 1) { o.i = 0; this.move(f, o, 0, 1); return; }
+      if (st.next_section === DROP && st.beats_to_next !== null && f.kind === "blinder" && st.beats_to_next <= 4) { o.i = 0.5 * (4 - st.beats_to_next) / 3; return; }   // last bar swell
       const div = p < 0.25 ? 1 : p < 0.5 ? 2 : p < 0.75 ? 4 : 8, color = mix(this.palette[0], WHITE, Math.pow(p, 1.5)), sub = st.beat * div, gate = 1 - mod(sub, 1);
       if (f.kind === "wash") {
         o.c = color;
@@ -773,7 +778,7 @@
     }
     drop(st, f, o) {
       const sb = st.section_beats;
-      if (sb < 1) { o.c = WHITE; o.i = f.kind !== "strobe" ? 1 - 0.5 * sb : 1 - sb; this.move(f, o, 0, -0.4); return; }   // IMPACT, every style
+      if (sb < 1) { o.c = WHITE; o.i = f.kind !== "strobe" && f.kind !== "blinder" ? 1 - 0.5 * sb : 1 - sb; this.move(f, o, (f.x - 0.5) * 0.8, -1); return; }   // IMPACT, every style
       this["d_" + this.style](st, f, o);
     }
     // ---- drop styles (mirror show.py exactly). Each handles every fixture kind so any rig subset looks good.
@@ -781,7 +786,7 @@
     d_pump(st, f, o) {
       const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick;
       if (f.kind === "wash") { o.c = mod(bi + f.index, 2) === 0 ? A : B; o.i = Math.max(0.15 + 0.85 * k, st.snare * this.snareAmt * 0.9); }
-      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; this.move(f, o, (f.index % 2 ? -1 : 1) * Math.sin(2 * Math.PI * st.beat / 4), -0.5 + 0.8 * k); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.5 + 0.5 * k; this.move(f, o, (f.index % 2 ? -1 : 1) * Math.sin(2 * Math.PI * st.beat / 4), -0.3 - 0.6 * k); }
       else if (f.kind === "strobe") { o.i = this.strobeAmt * Math.max(st.snare ** 2 * this.snareAmt, k ** 4 * 0.5); o.c = WHITE; }
     }
     d_chase(st, f, o) {
@@ -831,8 +836,9 @@
       const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick, sn = st.snare;
       let v = Math.max(k, sn); v = v > 0.4 ? v : 0;
       if (f.kind === "wash") { o.c = sn > k ? mix(B, WHITE, 0.7) : A; o.i = v; }
-      else if (f.kind === "mover") { o.c = sn > k ? WHITE : (f.index % 2 ? B : A); o.i = v; this.move(f, o, (mod(bi + f.index, 2) ? 1 : -1) * 0.9, 0.3); }
+      else if (f.kind === "mover") { o.c = sn > k ? WHITE : (f.index % 2 ? B : A); o.i = v; this.move(f, o, (mod(bi + f.index, 2) ? 1 : -1) * 0.9, sn > k ? -0.9 : 0.3); }
       else if (f.kind === "strobe") { o.c = WHITE; o.i = sn > 0.5 ? this.strobeAmt : 0; }
+      else if (f.kind === "blinder") o.i = sn > 0.6 && sn > k ? 0.8 * sn : 0;
     }
     d_sweep(st, f, o) {         // smooth + slow: wide mover arcs, washes crossfade colour in a travelling wave
       const A = this.palette[0], B = this.palette[this.palette.length - 1], k = st.kick;
@@ -845,17 +851,28 @@
     d_half_time_heavy(st, f, o) { // kick = solid hit, snare = huge slam + strobes; slow movers snap up on the snare
       const A = this.palette[0], B = this.palette[this.palette.length - 1], k = st.kick, sn = st.snare;
       if (f.kind === "wash") { o.c = sn > k ? mix(B, WHITE, 0.5 * sn) : A; o.i = Math.max(0.12 + 0.5 * k ** 1.5, sn * this.snareAmt); }
-      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.4 + 0.6 * Math.max(k, sn); this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 16 + f.index * 0.25)) * 0.7, 0.2 + 0.7 * sn); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.4 + 0.6 * Math.max(k, sn); this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 16 + f.index * 0.25)) * 0.7, 0.2 - 1.2 * sn); }
       else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * sn ** 2; o.hz = sn > 0.5 ? 14 : 0; }
+      else if (f.kind === "blinder") o.i = sn > 0.6 ? 0.8 * sn : 0;
+    }
+    d_crowd_sweep(st, f, o) {   // movers aimed into the crowd, mirrored sweeps (1 bar/cycle); blinders flash on every downbeat
+      const A = this.palette[0], B = this.palette[this.palette.length - 1], bi = Math.floor(st.beat), k = st.kick;
+      if (f.kind === "wash") { o.c = mod(bi + f.index, 2) === 0 ? A : B; o.i = Math.max(0.15 + 0.85 * k, st.snare * this.snareAmt * 0.9); }
+      else if (f.kind === "mover") { o.c = f.index % 2 ? B : A; o.i = 0.6 + 0.4 * k; this.move(f, o, (f.index % 2 ? -1 : 1) * Math.sin(2 * Math.PI * st.beat / 4) * 0.9, -0.8 - 0.2 * k); }
+      else if (f.kind === "strobe") { o.c = WHITE; o.i = this.strobeAmt * st.snare ** 2 * this.snareAmt; }
+      else if (f.kind === "blinder") o.i = st.beat_in_bar < 0.15 ? 0.6 * (1 - st.beat_in_bar / 0.15) : 0;
     }
     post(st, ctl, out) {
-      const a = st.section === BREAKDOWN ? 0.08 : 0.3;
+      let a = st.section === BREAKDOWN ? 0.08 : 0.3;
+      if (st.section === DROP && st.section_beats < 1) a = 0.55;   // impact: movers snap round to the crowd
       this.fx.forEach((f, i) => {
         const o = out[i], sm = this.smooth[i];
         if (this.first) { sm.pan = o.pan; sm.tilt = o.tilt; }
         sm.pan += (o.pan - sm.pan) * a; sm.tilt += (o.tilt - sm.tilt) * a;
         o.pan = clamp(sm.pan, 0, 1); o.tilt = clamp(sm.tilt, 0, 1);
-        o.hz = Math.min(o.hz, ctl.maxStrobe); o.i = clamp(o.i, 0, 1);
+        o.hz = Math.min(o.hz, ctl.maxStrobe);
+        if (f.kind === "blinder") { o.c = BLINDER_COLOR; o.hz = 0; if (ctl.blinders === false) o.i = 0; }
+        o.i = ctl.blackout ? 0 : clamp(o.i, 0, 1) * (ctl.master === undefined ? 1 : ctl.master);
       });
       this.first = false; return out;
     }
@@ -863,7 +880,7 @@
   // what a fixture looks like at time t (software/hardware strobe shown as on/off)
   function effective(f, o, t) {
     let i = o.i; if (o.hz > 0 && mod(t * o.hz, 1) > 0.3) i = 0;
-    const c = f.rgb ? o.c : WHITE; return [i, c[0], c[1], c[2], o.pan, o.tilt];
+    const c = f.kind === "blinder" ? BLINDER_COLOR : f.rgb ? o.c : WHITE; return [i, c[0], c[1], c[2], o.pan, o.tilt];
   }
 
   // ---------------------------------------------------------------- whole pipeline
@@ -924,6 +941,6 @@
     };
   }
 
-  const api = { extractFeatures, analyzeOffline, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
+  const api = { BLINDER_COLOR, extractFeatures, analyzeOffline, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Jaylights = api;
 })(typeof self !== "undefined" ? self : globalThis);

@@ -41,6 +41,8 @@ def _rig(args):
         rig.output["port"] = args.port_name
     if args.no_strobe:
         rig.safety["strobe"] = False
+    if args.no_blinders:
+        rig.safety["blinders"] = False
     return rig
 
 
@@ -182,6 +184,7 @@ def main(argv=None):
             p.add_argument("--http-port", type=int, default=8765, help="visualizer port")
             p.add_argument("--no-browser", action="store_true")
             p.add_argument("--no-strobe", action="store_true", help="disable strobing entirely")
+            p.add_argument("--no-blinders", action="store_true", help="keep the audience blinders dark")
             p.add_argument("--no-audio", action="store_true", help="don't play sound (show runs on the clock)")
             p.add_argument("--offset", type=float, default=30, help="fire lights this many ms early (DMX/LED lag)")
             p.add_argument("--drop-style", choices=["auto", *DROP_STYLES], default="auto",
@@ -230,7 +233,7 @@ def main(argv=None):
     p.add_argument("--output")
     p.add_argument("--port-name")
     p.add_argument("--loop", action="store_true")
-    p.set_defaults(fn=cmd_test_rig, no_strobe=False)
+    p.set_defaults(fn=cmd_test_rig, no_strobe=False, no_blinders=False)
 
     args = ap.parse_args(argv)
     args.fn(args)

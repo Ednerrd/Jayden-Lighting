@@ -98,6 +98,7 @@
   <footer>
     <button id="b-blackout" class="danger" data-action="blackout">BLACKOUT<kbd>B</kbd></button>
     <button id="b-strobe" data-action="strobe">STROBES<kbd>S</kbd></button>
+    <button id="b-blinders" data-action="blinders">BLINDERS<kbd>L</kbd></button>
     <label class="slider">MASTER <input id="s-master" type="range" min="0" max="1" step="0.01" value="1"></label>
     <label class="slider">MOVE <input id="s-move" type="range" min="0" max="1" step="0.01" value="1"></label>
     <label class="slider">DROP STYLE <select id="s-drop"><option value="auto">auto</option></select></label>
@@ -145,6 +146,7 @@ window.addEventListener("keydown", e => {
   const k = e.key.toLowerCase();
   if (k === "b") send("blackout");
   else if (k === "s") send("strobe");
+  else if (k === "l") send("blinders");
   else if (k === " ") { e.preventDefault(); send("pause"); }
   else if (k === "t") send("tap_one");
   else if (k === "h") send("half_beat");
@@ -236,6 +238,11 @@ function draw() {
       ctx.globalCompositeOperation = "source-over";
       ctx.fillStyle = "#2b2d3c"; ctx.fillRect(x - 9, y - 12, 18, 10);
       ctx.globalCompositeOperation = "lighter";
+    } else if (f.kind === "blinder") {
+      flash = Math.max(flash, 0.6 * a);
+      ctx.fillStyle = rgba(c, 0.2 + 0.8 * a);
+      ctx.fillRect(x - 18, y - 2, 36, 10);
+      if (a > 0.02) { glow(x, y, 120, c, 0.7 * a); glow(x, floorY, 110, c, 0.5 * a); }
     } else if (f.kind === "strobe") {
       flash = Math.max(flash, a);
       ctx.fillStyle = rgba({ r: 1, g: 1, b: 1 }, 0.15 + 0.85 * a);
@@ -272,6 +279,7 @@ function updateHud(st, c) {
   }
   $("b-blackout").classList.toggle("on", c.blackout);
   $("b-strobe").classList.toggle("on", c.strobe);
+  $("b-blinders").classList.toggle("on", c.blinders);
   document.querySelectorAll("[data-force]").forEach(b => b.classList.toggle("on", (c.forced || "") === b.dataset.force && info.mode === "live"));
   if (info.mode === "file") {
     $("playhead").style.left = (st.t / info.duration * 100) + "%";

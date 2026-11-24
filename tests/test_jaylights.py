@@ -185,3 +185,124 @@ def test_strobe_safety_holds_for_every_style():
         ctl = Controls(drop_style=style, strobe_enabled=False)
         for t in np.arange(drop_t - 1, drop_t + 6, 0.02):
             assert all(s.strobe_hz == 0 for s in eng.render(tl.state_at(float(t)), ctl))
+
+
+# ---------------------------------------------------------------- audience blinders + crowd aiming
+def _blinders(fixtures):
+    return [i for i, f in enumerate(fixtures) if f.kind == "blinder"]
+
+
+def test_blinder_profiles_and_effective_colour():
+    rig = load_rig(None)
+    bl = [f for f in rig.fixtures if f.kind == "blinder"]
+    assert len(bl) == 2 and sorted(f.x for f in bl) == [0.3, 0.7]
+    for name in ("blinder_1ch", "blinder_4ch"):
+        assert BUILTIN_PROFILES[name].kind == "blinder"
+    four = Fixture("b", BUILTIN_PROFILES["blinder_4ch"], address=1)
+    assert four.render(FixtureState(intensity=1, r=1, g=0, b=0), 0) == [255, 255, 255, 255]
+    e = bl[0].effective(FixtureState(intensity=1, r=1, g=0, b=0), 0)
+    assert (e["r"], e["g"], e["b"]) == (1.0, 0.85, 0.6)
+
+
+@pytest.mark.parametrize("style", DROP_STYLES)
+def test_blinders_valid_and_dark_outside_drops(style):
+    audio, _ = make_track(bpm=128)
+    tl = analyze_audio(audio, SR)
+    rig = load_rig(None)
+    bi = _blinders(rig.fixtures)
+    eng = ShowEngine(rig.fixtures, "house")
+    ctl = Controls(drop_style=style)
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    calm, swell, impact = [], [], []
+    for t in np.arange(0, tl.duration, 0.05):
+        st = tl.state_at(float(t))
+        states = eng.render(st, ctl)
+        for i in bi:
+            s = states[i]
+            assert 0 <= s.intensity <= 1 and s.strobe_hz == 0
+            assert (s.r, s.g, s.b) == (1.0, 0.85, 0.6)
+            if st.section in ("intro", "groove", "breakdown", "outro"):
+                calm.append(s.intensity)
+            if st.section == BUILD and st.beats_to_next is not None:
+                if st.beats_to_next <= 1:
+                    assert s.intensity == 0, "dark on the final pre-drop beat"
+                elif st.beats_to_next <= 4:
+                    swell.append(s.intensity)
+                else:
+                    assert s.intensity == 0
+            if drop_t + 0.0 < t < drop_t + 0.06:
+                impact.append(s.intensity)
+    assert calm and np.mean(calm) < 0.1
+    assert swell and 0 < max(swell) <= 0.5
+    assert impact and min(impact) > 0.85, "full blinder hit on the drop impact"
+
+
+def test_blinders_flag_blackout_and_strobe_independence():
+    audio, _ = make_track(bpm=128)
+    tl = analyze_audio(audio, SR)
+    rig = load_rig(None)
+    bi = _blinders(rig.fixtures)
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    st = tl.state_at(drop_t + 0.05)
+    assert max(ShowEngine(rig.fixtures, "house").render(st, Controls())[i].intensity for i in bi) > 0.85
+    # strobes disabled must NOT disable blinders
+    assert max(ShowEngine(rig.fixtures, "house").render(st, Controls(strobe_enabled=False))[i].intensity for i in bi) > 0.85
+    off = Controls(blinders=False)
+    eng = ShowEngine(rig.fixtures, "house")
+    for t in np.arange(drop_t - 5, drop_t + 6, 0.05):
+        assert all(eng.render(tl.state_at(float(t)), off)[i].intensity == 0 for i in bi)
+    assert all(ShowEngine(rig.fixtures, "house").render(st, Controls(blackout=True))[i].intensity == 0 for i in bi)
+    assert all(abs(ShowEngine(rig.fixtures, "house").render(st, Controls(master=0.5))[i].intensity - 0.5 * ShowEngine(rig.fixtures, "house").render(st, Controls())[i].intensity) < 1e-9 for i in bi)
+
+
+def test_live_mode_has_no_blinder_swell():
+    from jaylights.state import MusicState
+    rig = load_rig(None)
+    eng = ShowEngine(rig.fixtures, "house")
+    for beat in np.arange(0, 32, 0.25):
+        st = MusicState(section=BUILD, section_index=0, beat=beat, beat_in_bar=beat % 4, section_progress=beat / 32,
+                        next_section=None, beats_to_next=None)
+        assert all(eng.render(st, Controls())[i].intensity == 0 for i in _blinders(rig.fixtures))
+
+
+def test_crowd_sweep_blinders_hit_downbeats():
+    from jaylights.state import MusicState
+    rig = load_rig(None)
+    eng = ShowEngine(rig.fixtures, "house")
+    mk = lambda bib, kick: MusicState(section=DROP, section_index=1, section_beats=10 + bib, beat=10 + bib,
+                                      beat_in_bar=bib, bar=2, kick=kick)
+    ctl = Controls(drop_style="crowd_sweep")
+    on = eng.render(mk(0.0, 1.0), ctl)
+    off = eng.render(mk(2.0, 0.0), ctl)
+    for i in _blinders(rig.fixtures):
+        assert abs(on[i].intensity - 0.6) < 1e-9 and off[i].intensity == 0
+    for i, f in enumerate(rig.fixtures):       # movers are aimed at the crowd (dtilt <= -0.8)
+        if f.kind == "mover":
+            assert (on[i].tilt - f.tilt_center) * f.tilt_up < 0
+
+
+def test_movers_snap_to_the_crowd_on_drop_impact_and_aim_up_in_builds():
+    audio, _ = make_track(bpm=128)
+    tl = analyze_audio(audio, SR)
+    rig = load_rig(None)
+    movers = [(i, f) for i, f in enumerate(rig.fixtures) if f.kind == "mover"]
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    for style in DROP_STYLES:
+        eng = ShowEngine(rig.fixtures, "house")
+        ctl = Controls(drop_style=style)
+        for t in np.arange(drop_t - 2, drop_t + 0.45, 0.05):
+            states = eng.render(tl.state_at(float(t)), ctl)
+            if t < drop_t - 0.4:
+                for i, f in movers:   # building: aimed up
+                    assert (states[i].tilt - f.tilt_center) * f.tilt_up > 0
+        for i, f in movers:           # ~0.4 s into the impact: crowd side of home
+            assert (states[i].tilt - f.tilt_center) * f.tilt_up < 0, style
+
+
+def test_crowd_sweep_in_rotations_and_no_blinders_rig_safety():
+    for genre in ("auto", "house", "progressive", "trance", "techno", "dubstep", "trap"):
+        assert "crowd_sweep" in DROP_ROTATION[genre]
+    rig = parse_rig(EXAMPLE_RIG + "\n[[fixture]]\nname='B'\nprofile='blinder_1ch'\naddress=70\n")
+    assert rig.blinders_enabled
+    rig.safety["blinders"] = False
+    assert not rig.blinders_enabled
