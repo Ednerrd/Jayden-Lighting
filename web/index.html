@@ -1,0 +1,395 @@
+<title>Jaylights Test Rig</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Display:wght@700;900&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+  /* Layout: one centered column — controls, stage, three detection lanes, meters. Dark "venue" look in both themes. */
+  :root {
+    color-scheme: dark;
+    --bg: #08080d;
+    --panel: #12131b;
+    --panel-2: #1a1b26;
+    --line: #272939;
+    --fg: #ecedf5;
+    --dim: #8d8fa7;
+    --accent: #f8fafc;
+    --intro: #6b7cff; --groove: #22d3ee; --breakdown: #a78bfa; --build: #fbbf24; --drop: #f43f5e; --outro: #64748b;
+    --ok: #4ade80;
+    --display: "Big Shoulders Display", "Arial Narrow", Impact, sans-serif;
+    --body: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+  }
+  html, body { background: var(--bg); color: var(--fg); }
+  [hidden] { display: none !important; }
+  body {
+    font: 15px/1.45 var(--body);
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    padding-block: 20px 40px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; display: grid; gap: 14px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; }
+  h1 { margin: 0; font: 900 clamp(30px, 6vw, 46px)/0.95 var(--display); letter-spacing: .04em; text-transform: uppercase; }
+  h1 span { color: var(--drop); }
+  .sub { color: var(--dim); max-width: 60ch; margin: 0; }
+  .bar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .seg { display: inline-flex; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 3px; gap: 3px; }
+  .seg button { background: transparent; border: 0; color: var(--dim); }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--fg); box-shadow: inset 0 0 0 1px var(--line); }
+  button {
+    font: 600 13px/1 var(--body); letter-spacing: .03em; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 13px; cursor: pointer;
+  }
+  button:hover { border-color: #3a3d55; }
+  button:focus-visible { outline: 2px solid var(--groove); outline-offset: 2px; }
+  button.on { background: var(--accent); color: #000; border-color: var(--accent); }
+  button.danger.on { background: #dc2626; color: #fff; border-color: #ef4444; }
+  .grow { flex: 1; }
+  .label { font: 600 11px/1 var(--body); letter-spacing: .12em; text-transform: uppercase; color: var(--dim); }
+
+  .stage { position: relative; aspect-ratio: 16 / 9; max-width: 100%; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #05050a; }
+  .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+  .hud { position: absolute; left: 0; right: 0; top: 0; display: flex; justify-content: space-between; align-items: flex-start; padding: 12px 14px; pointer-events: none; gap: 10px; }
+  #sec { font: 900 clamp(26px, 6vw, 54px)/0.9 var(--display); letter-spacing: .06em; text-transform: uppercase; text-shadow: 0 0 24px currentColor; }
+  #prog { height: 4px; width: min(220px, 40vw); background: rgba(255,255,255,.08); border-radius: 2px; margin-top: 8px; overflow: hidden; }
+  #prog div { height: 100%; width: 0; background: currentColor; }
+  .tempo { text-align: right; display: grid; gap: 6px; justify-items: end; }
+  #bpm { font: 700 clamp(18px, 3.4vw, 28px)/1 var(--mono); font-variant-numeric: tabular-nums; }
+  #bpm small { font-size: .45em; color: var(--dim); margin-left: 4px; }
+  .dots { display: flex; gap: 6px; }
+  .dots i { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.12); }
+  .dots i.on { background: #fff; box-shadow: 0 0 10px #fff; }
+  .dots i.one.on { background: var(--drop); box-shadow: 0 0 12px var(--drop); border-color: var(--drop); }
+  #lock { font: 700 11px/1 var(--mono); letter-spacing: .08em; }
+
+  .start { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(5,5,10,.72); backdrop-filter: blur(2px); padding: 16px; text-align: center; }
+  .start > div { display: grid; gap: 12px; justify-items: center; max-width: 440px; }
+  .start button { font: 900 22px/1 var(--display); letter-spacing: .08em; text-transform: uppercase; padding: 14px 26px; background: var(--drop); border-color: var(--drop); color: #fff; }
+  .start p { margin: 0; color: var(--dim); font-size: 13px; }
+  .start .warn { color: var(--build); }
+
+  .lanes { display: grid; gap: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .lane { display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 10px; }
+  .lane .label { white-space: nowrap; }
+  .track { position: relative; height: 22px; border-radius: 4px; background: var(--panel-2); cursor: pointer; overflow: hidden; }
+  .track .s { position: absolute; top: 0; bottom: 0; opacity: .7; font: 700 10px/22px var(--body); color: #06060a; text-transform: uppercase; letter-spacing: .04em; padding-left: 4px; overflow: hidden; white-space: nowrap; border-right: 1px solid var(--panel-2); }
+  .track .ph { position: absolute; top: -2px; bottom: -2px; width: 2px; background: #fff; box-shadow: 0 0 8px #fff; }
+  .lanes .foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; color: var(--dim); font-size: 12px; margin-top: 4px; }
+  .lanes .foot b { color: var(--fg); font-weight: 600; }
+  #clock { font: 500 12px var(--mono); font-variant-numeric: tabular-nums; }
+
+  .meters { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; }
+  .hits { display: flex; gap: 10px; }
+  .hit { display: grid; gap: 4px; justify-items: center; }
+  .hit i { width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel-2); }
+  .lv { display: grid; grid-template-columns: 44px 120px; gap: 6px 8px; align-items: center; }
+  .lv div { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  .lv div span { display: block; height: 100%; width: 0; background: var(--groove); }
+  .dropzone { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 14px 16px; border: 1.5px dashed #3a3d55; border-radius: 12px; background: var(--panel); }
+  .dropzone.over { border-color: var(--groove); background: #0f1c24; }
+  .dropzone .txt { display: grid; gap: 2px; min-width: 0; flex: 1 1 220px; }
+  .dropzone .txt b { font: 900 20px/1 var(--display); letter-spacing: .05em; text-transform: uppercase; }
+  .dropzone .txt span { color: var(--dim); font-size: 13px; }
+  .pick { font: 700 13px/1 var(--body); background: var(--groove); color: #04141a; border-radius: 8px; padding: 10px 14px; cursor: pointer; }
+  .pick:focus-within { outline: 2px solid var(--fg); outline-offset: 2px; }
+  select { font: 600 13px var(--body); color: var(--fg); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  #busy { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(5,5,10,.82); text-align: center; padding: 16px; }
+  #busy > div { display: grid; gap: 10px; justify-items: center; width: min(360px, 90%); }
+  #busy b { font: 900 24px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; }
+  #busy .pbar { width: 100%; height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; }
+  #busy .pbar div { height: 100%; width: 0; background: var(--groove); transition: width .15s; }
+  #busy span { color: var(--dim); font-size: 13px; }
+  #err { color: var(--drop); font-size: 13px; flex-basis: 100%; }
+  .notes { color: var(--dim); font-size: 13px; max-width: 70ch; margin: 0; }
+  .notes b { color: var(--fg); }
+  @media (max-width: 560px) {
+    .lane { grid-template-columns: 1fr; gap: 4px; }
+    .lv { grid-template-columns: 44px 1fr; flex: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { #sec { text-shadow: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Jaylights <span>Test Rig</span></h1>
+    <p class="sub">The real show engine, running in your browser. Play a test track or drop in your own, and flip between modes mid-song to compare.</p>
+  </header>
+
+  <div class="bar" role="toolbar" aria-label="Test options">
+    <span class="label">Track</span>
+    <div class="seg" id="trackSeg">
+      <button id="t-house" data-track="house" aria-pressed="true">House &middot; 126</button>
+      <button id="t-dubstep" data-track="dubstep" aria-pressed="false">Dubstep &middot; 140</button>
+      <button id="t-mine" data-track="mine" aria-pressed="false" hidden>Your track</button>
+    </div>
+    <span class="label">Mode</span>
+    <div class="seg" id="modeSeg">
+      <button id="m-pre" data-mode="pre" aria-pressed="true">Pre-analyzed</button>
+      <button id="m-live" data-mode="live" aria-pressed="false">Live</button>
+    </div>
+  </div>
+
+  <div class="dropzone" id="dropzone">
+    <div class="txt"><b>Try your own track</b><span>Drop an MP3, WAV, M4A or FLAC here. It's analyzed right on this device and never uploaded.</span></div>
+    <label for="genre" class="label">Genre</label>
+    <select id="genre">
+      <option value="auto">Auto</option><option value="house">House</option><option value="progressive">Progressive</option>
+      <option value="techno">Techno</option><option value="trance">Trance</option><option value="dubstep">Dubstep</option>
+      <option value="trap">Trap</option><option value="dnb">DnB</option>
+    </select>
+    <label class="pick">Choose a track<input type="file" id="file" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.aac,.aiff" hidden></label>
+    <div id="err" hidden></div>
+  </div>
+
+  <div class="stage">
+    <canvas id="cv" aria-label="Virtual light rig"></canvas>
+    <div class="hud">
+      <div><div id="sec" style="color: var(--intro)">Ready</div><div id="prog" style="color: var(--intro)"><div></div></div></div>
+      <div class="tempo">
+        <div id="bpm">---<small>BPM</small></div>
+        <div class="dots"><i class="one"></i><i></i><i></i><i></i></div>
+        <div id="lock"></div>
+      </div>
+    </div>
+    <div id="busy" hidden><div><b id="busyT">Listening</b><div class="pbar"><div id="busyP"></div></div><span id="busyS">Working out the beat, the builds and the drops</span></div></div>
+    <div class="start" id="start">
+      <div>
+        <button id="go">Start the show</button>
+        <p id="startNote">Turn your sound up. 2&frac12; minutes: intro, build, drop, breakdown, build, drop.</p>
+        <p class="warn">Contains flashing lights. Turn Strobes off below if anyone nearby is sensitive to flashing.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button id="play">Pause</button>
+    <button id="restart">Restart</button>
+    <button id="skip">Skip to drop</button>
+    <span class="grow"></span>
+    <button id="blackout" class="danger">Blackout</button>
+    <button id="strobe" class="on">Strobes</button>
+  </div>
+
+  <section class="lanes" aria-label="Section detection compared to the real structure">
+    <div class="lane" id="truthRow"><span class="label">Real structure</span><div class="track" id="lane-truth"></div></div>
+    <div class="lane"><span class="label">Pre-analyzed</span><div class="track" id="lane-pre"></div></div>
+    <div class="lane"><span class="label">Live (as heard)</span><div class="track" id="lane-live"></div></div>
+    <div class="foot">
+      <span>Detected tempo <b id="dbpm">&ndash;</b> &middot; tap any lane to jump there</span>
+      <span id="clock">0:00 / 0:00</span>
+    </div>
+  </section>
+
+  <div class="meters" aria-label="What the analyzer hears">
+    <div class="hits">
+      <div class="hit"><i id="h-kick"></i><span class="label">Kick</span></div>
+      <div class="hit"><i id="h-snare"></i><span class="label">Snare</span></div>
+      <div class="hit"><i id="h-hat"></i><span class="label">Hat</span></div>
+    </div>
+    <div class="lv">
+      <span class="label">Low</span><div><span id="l-low"></span></div>
+      <span class="label">Mid</span><div><span id="l-mid"></span></div>
+      <span class="label">High</span><div><span id="l-high"></span></div>
+    </div>
+  </div>
+
+  <p class="notes"><b>What you're looking at:</b> the virtual rig has 8 RGBW pars on the truss, 4 moving heads, 2 strobes and 6 floor uplights. Every light value here came out of the same code that drives real DMX. The two test tracks are synthesized, so their "real structure" lane is known exactly. Your own tracks get analyzed on this device with the same code, ported from Python. <b>Pre-analyzed</b> reads the whole song first and blacks out the beat before each drop. <b>Live</b> hears it as it plays, so its colors in the bottom lane show when it figured each section out.</p>
+</div>
+
+<script src="engine.js"></script>
+<script>
+const SEC_COL = { intro: "#6b7cff", groove: "#22d3ee", breakdown: "#a78bfa", build: "#fbbf24", drop: "#f43f5e", outro: "#64748b" };
+const $ = id => document.getElementById(id);
+const cv = $("cv"), ctx = cv.getContext("2d");
+let meta = null, cache = {}, show = null, track = "house", mode = "pre";
+let audio = new Audio(), started = false, blackout = false, strobes = true;
+let W = 0, H = 0;
+
+function b64(s) { const bin = atob(s); const a = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i); return a; }
+function fmt(t) { t = Math.max(0, t || 0); return Math.floor(t / 60) + ":" + String(Math.floor(t % 60)).padStart(2, "0"); }
+
+function resize() {
+  const r = cv.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  W = r.width; H = r.height; cv.width = Math.round(W * d); cv.height = Math.round(H * d); ctx.setTransform(d, 0, 0, d, 0, 0);
+}
+new ResizeObserver(resize).observe(cv);
+
+async function loadTrack(key) {
+  if (!cache[key]) {
+    const [js, mp3] = await Promise.all([fetch(key + "_show.json").then(r => r.json()), fetch(key + ".mp3").then(r => r.blob())]);
+    cache[key] = {
+      pre: { fx: b64(js.pre.fx), st: b64(js.pre.st) },
+      live: { fx: b64(js.live.fx), st: b64(js.live.st) },
+      url: URL.createObjectURL(mp3),
+    };
+  }
+  return cache[key];
+}
+
+function lane(el, secs, dur) {
+  el.innerHTML = "";
+  for (const s of secs) {
+    const d = document.createElement("div"); d.className = "s";
+    d.style.left = (s.start / dur * 100) + "%"; d.style.width = ((s.end - s.start) / dur * 100) + "%";
+    d.style.background = SEC_COL[s.kind] || "#888"; d.textContent = s.kind; el.appendChild(d);
+  }
+  const ph = document.createElement("div"); ph.className = "ph"; el.appendChild(ph);
+  el.onclick = e => { const r = el.getBoundingClientRect(); seek((e.clientX - r.left) / r.width * dur); };
+}
+
+async function selectTrack(key) {
+  track = key;
+  document.querySelectorAll("[data-track]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.track === key)));
+  const t = meta.tracks[key];
+  $("truthRow").hidden = !t.truth;
+  if (t.truth) lane($("lane-truth"), t.truth, t.duration);
+  lane($("lane-pre"), t.offline_sections, t.duration); lane($("lane-live"), t.live_sections, t.duration);
+  $("dbpm").textContent = t.detected_bpm + " BPM" + (t.truth ? " (actual " + t.bpm + ")" : "");
+  show = await loadTrack(key);
+  const wasPlaying = started && !audio.paused;
+  audio.src = show.url; audio.currentTime = 0;
+  if (wasPlaying) audio.play();
+}
+function selectMode(m) {
+  mode = m; document.querySelectorAll("[data-mode]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+}
+function seek(t) { audio.currentTime = Math.max(0, t); if (!started) start(); }
+async function start() {
+  started = true; $("start").hidden = true;
+  try { await audio.play(); } catch (e) { $("start").hidden = false; started = false; }
+}
+$("go").onclick = start;
+document.querySelectorAll("[data-track]").forEach(b => b.onclick = () => selectTrack(b.dataset.track));
+document.querySelectorAll("[data-mode]").forEach(b => b.onclick = () => selectMode(b.dataset.mode));
+$("play").onclick = () => { if (!started) return start(); audio.paused ? audio.play() : audio.pause(); };
+$("restart").onclick = () => seek(0);
+$("skip").onclick = () => {
+  const secs = meta.tracks[track].truth || meta.tracks[track].offline_sections;
+  const d = secs.find(s => s.kind === "drop" && s.start > audio.currentTime + 2) || secs.find(s => s.kind === "drop");
+  if (d) seek(Math.max(0, d.start - 6));
+};
+$("blackout").onclick = () => { blackout = !blackout; $("blackout").classList.toggle("on", blackout); };
+$("strobe").onclick = () => { strobes = !strobes; $("strobe").classList.toggle("on", strobes); };
+audio.addEventListener("play", () => $("play").textContent = "Pause");
+audio.addEventListener("pause", () => $("play").textContent = "Play");
+
+function rgba(c, a) { return `rgba(${c[0]},${c[1]},${c[2]},${a})`; }
+function beam(x, y, ang, len, w0, w1, c, a) {
+  const dx = Math.sin(ang), dy = Math.cos(ang), ex = x + dx * len, ey = y + dy * len, px = -dy, py = dx;
+  const g = ctx.createLinearGradient(x, y, ex, ey); g.addColorStop(0, rgba(c, a)); g.addColorStop(1, rgba(c, 0));
+  ctx.fillStyle = g; ctx.beginPath();
+  ctx.moveTo(x + px * w0, y + py * w0); ctx.lineTo(ex + px * w1, ey + py * w1); ctx.lineTo(ex - px * w1, ey - py * w1); ctx.lineTo(x - px * w0, y - py * w0);
+  ctx.closePath(); ctx.fill(); return [ex, ey];
+}
+function glow(x, y, r, c, a) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, r); g.addColorStop(0, rgba(c, a)); g.addColorStop(1, rgba(c, 0));
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+}
+
+function draw() {
+  requestAnimationFrame(draw);
+  if (!meta || !W) return;
+  const s = W / 1100;
+  const trussY = H * 0.13, floorY = H * 0.9;
+  ctx.globalCompositeOperation = "source-over";
+  const bg = ctx.createLinearGradient(0, 0, 0, H); bg.addColorStop(0, "#04040a"); bg.addColorStop(1, "#0e0e18");
+  ctx.fillStyle = bg; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = "#0a0a12"; ctx.fillRect(0, floorY, W, H - floorY);
+  ctx.fillStyle = "#1c1d28"; ctx.fillRect(W * 0.03, trussY - 6, W * 0.94, 7);
+  if (!show) return;
+
+  const t = meta.tracks[track], nF = meta.fixtures.length;
+  const fi = Math.min(t.frames - 1, Math.max(0, Math.floor(audio.currentTime * meta.fps)));
+  const data = show[mode], fx = data.fx, st = data.st, so = fi * 13;
+  ctx.globalCompositeOperation = "lighter";
+  let flash = 0;
+  meta.fixtures.forEach((f, i) => {
+    const o = (fi * nF + i) * 6;
+    let a = blackout || !started ? 0 : fx[o] / 255;
+    if (f.kind === "strobe" && !strobes) a *= 0.25;
+    const c = [fx[o + 1], fx[o + 2], fx[o + 3]], pan = fx[o + 4] / 255, tilt = fx[o + 5] / 255;
+    const x = W * (0.05 + 0.9 * f.x), floor = f.y > 0.5, y = floor ? floorY - 5 : trussY + 4;
+    if (f.kind === "mover") {
+      const ang = Math.max(-1.35, Math.min(1.35, (pan - 0.5) * 7 + (tilt - 0.5) * 2.5 * (i % 2 ? 1 : -1)));
+      const len = (floorY - trussY) / Math.max(0.35, Math.cos(ang));
+      if (a > 0.01) { const [ex, ey] = beam(x, y, ang, len, 3 * s, 26 * s, c, 0.55 * a); if (ey >= floorY - 2) glow(ex, floorY, 50 * s, c, 0.35 * a); }
+      glow(x, y, 14 * s, c, 0.9 * a + 0.05);
+      ctx.globalCompositeOperation = "source-over"; ctx.fillStyle = "#2b2d3c"; ctx.fillRect(x - 9 * s, y - 12 * s, 18 * s, 10 * s); ctx.globalCompositeOperation = "lighter";
+    } else if (f.kind === "strobe") {
+      flash = Math.max(flash, a);
+      ctx.fillStyle = `rgba(255,255,255,${0.12 + 0.88 * a})`; ctx.fillRect(x - 16 * s, y - 2, 32 * s, 7 * s);
+      if (a > 0.05) glow(x, y, 90 * s, [255, 255, 255], 0.6 * a);
+    } else if (floor) {
+      if (a > 0.01) beam(x, y, Math.PI, floorY - trussY * 0.4, 6 * s, 40 * s, c, 0.33 * a);
+      glow(x, y, 16 * s, c, 0.95 * a + 0.04);
+    } else {
+      if (a > 0.01) { beam(x, y, 0, floorY - trussY, 6 * s, 60 * s, c, 0.3 * a); glow(x, floorY, 70 * s, c, 0.3 * a); }
+      glow(x, y, 16 * s, c, 0.95 * a + 0.04);
+    }
+  });
+  if (flash > 0.05 && strobes && !blackout) { ctx.fillStyle = `rgba(255,255,255,${0.1 * flash})`; ctx.fillRect(0, 0, W, H); }
+  ctx.globalCompositeOperation = "source-over";
+
+  // HUD
+  const sec = meta.sections[st[so]], col = SEC_COL[sec] || "#fff";
+  $("sec").textContent = started ? sec : "Ready"; $("sec").style.color = col;
+  $("prog").style.color = col; $("prog").firstChild.style.width = (st[so + 4] / 255 * 100) + "%";
+  const bib = st[so + 1] / 60, bpm = ((st[so + 2] << 8) | st[so + 3]) / 10;
+  $("bpm").firstChild.nodeValue = started ? bpm.toFixed(1) : "---";
+  document.querySelectorAll(".dots i").forEach((d, i) => d.classList.toggle("on", started && i === Math.floor(bib) % 4 && bib % 1 < 0.5));
+  const lk = $("lock");
+  if (mode === "live") { const L = st[so + 12]; lk.textContent = L ? "● LOCKED" : "○ LISTENING"; lk.style.color = L ? "#4ade80" : "#8d8fa7"; } else lk.textContent = "";
+  [["kick", 5], ["snare", 6], ["hat", 7]].forEach(([k, j]) => { const v = st[so + j] / 255; const el = $("h-" + k); el.style.background = `rgba(255,255,255,${v})`; el.style.boxShadow = v > 0.3 ? `0 0 ${12 * v}px #fff` : "none"; });
+  [["low", 8], ["mid", 9], ["high", 10]].forEach(([k, j]) => $("l-" + k).style.width = (st[so + j] / 255 * 100) + "%");
+  const pct = (audio.currentTime / t.duration * 100) + "%";
+  document.querySelectorAll(".track .ph").forEach(p => p.style.left = pct);
+  $("clock").textContent = fmt(audio.currentTime) + " / " + fmt(t.duration);
+}
+
+// ---------- your own track ----------
+const busy = (t, p, sub) => { $("busy").hidden = false; $("busyT").textContent = t; $("busyP").style.width = Math.round(p * 100) + "%"; if (sub) $("busyS").textContent = sub; };
+const yieldUI = () => new Promise(r => setTimeout(r, 0));
+async function useFile(file) {
+  if (!file) return;
+  $("err").hidden = true;
+  audio.pause(); started = false; $("start").hidden = true;
+  try {
+    busy("Loading", 0.02, file.name);
+    const buf = await file.arrayBuffer();
+    const AC = window.AudioContext || window.webkitAudioContext, ac = new AC();
+    const decoded = await new Promise((res, rej) => ac.decodeAudioData(buf, res, rej));
+    if (ac.close) ac.close();
+    if (decoded.duration > 15 * 60) throw new Error("That file is over 15 minutes. Try a single track rather than a full mix.");
+    const n = decoded.length, mono = new Float32Array(n);
+    for (let c = 0; c < decoded.numberOfChannels; c++) { const d = decoded.getChannelData(c); for (let i = 0; i < n; i++) mono[i] += d[i] / decoded.numberOfChannels; }
+    const steps = { "Listening": [0.05, 0.45], "Finding the beat and the drops": [0.45, 0.55], "Simulating live mode": [0.55, 1] };
+    const r = await Jaylights.analyzeTrack(mono, decoded.sampleRate, $("genre").value, async (label, p) => {
+      const [a, b] = steps[label] || [0, 1]; busy(label, a + (b - a) * p); await yieldUI();
+    });
+    if (cache.mine && cache.mine.url) URL.revokeObjectURL(cache.mine.url);
+    meta.tracks.mine = r.track;
+    cache.mine = { pre: r.pre, live: r.live, url: URL.createObjectURL(file) };
+    const name = file.name.replace(/\.[^.]+$/, "");
+    $("t-mine").hidden = false; $("t-mine").textContent = name.length > 24 ? name.slice(0, 23) + "\u2026" : name;
+    await selectTrack("mine");
+    const drops = r.track.offline_sections.filter(s => s.kind === "drop").length;
+    $("startNote").textContent = `${r.track.detected_bpm} BPM, ${drops} drop${drops === 1 ? "" : "s"} found. Tap to play it with lights.`;
+    $("busy").hidden = true; $("start").hidden = false;
+  } catch (e) {
+    $("busy").hidden = true; $("start").hidden = started;
+    $("err").textContent = (e && e.message && !/decod/i.test(e.message) ? e.message : "Couldn't read that file. MP3, WAV, M4A or FLAC work best (Apple Music downloads are copy-protected and won't open).");
+    $("err").hidden = false;
+  }
+}
+$("file").onchange = e => useFile(e.target.files[0]);
+const dz = $("dropzone");
+["dragenter", "dragover"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("over"); }));
+["dragleave", "drop"].forEach(ev => document.addEventListener(ev, e => { e.preventDefault(); if (ev === "drop" || e.target === document.documentElement) dz.classList.remove("over"); }));
+document.addEventListener("drop", e => { const f = e.dataTransfer && e.dataTransfer.files[0]; if (f) useFile(f); });
+
+(async () => {
+  meta = await fetch("meta.json").then(r => r.json());
+  await selectTrack("house");
+  requestAnimationFrame(draw);
+})();
+</script>
