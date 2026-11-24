@@ -179,6 +179,7 @@
     <button id="play">Pause</button>
     <button id="restart">Restart</button>
     <button id="skip">Skip to drop</button>
+    <button id="report" title="Copies what the analyzer found, to paste to Claude">Copy analysis</button>
     <span class="grow"></span>
     <button id="blackout" class="danger">Blackout</button>
     <button id="strobe" class="on">Strobes</button>
@@ -254,7 +255,7 @@ async function loadTrack(key) {
       // keep the known truth (and nominal bpm) from meta.json, take the detected lanes from this analysis
       const t = meta.tracks[key];
       Object.assign(t, { frames: r.track.frames, detected_bpm: r.track.detected_bpm, offline_sections: r.track.offline_sections, live_sections: r.track.live_sections });
-      cache[key] = { states: r.states, genre: DEMO_GENRE[key], url: URL.createObjectURL(blob) };
+      cache[key] = { states: r.states, genre: DEMO_GENRE[key], url: URL.createObjectURL(blob), tl: r.timeline, name: key };
     } finally { $("busy").hidden = true; $("start").hidden = started; }
   }
   if (!cache[key].out) renderShows(cache[key]);
@@ -521,6 +522,30 @@ function hud(st, so, t) {
   $("clock").textContent = fmt(audio.currentTime) + " / " + fmt(t.duration);
 }
 
+// ---------- analysis report (to paste to Claude) ----------
+function reportText() {
+  const t = meta.tracks[track], c = cache[track], tl = c && c.tl;
+  const L = [`JAYLIGHTS ANALYSIS v1 | ${c && c.name ? c.name : track} | genre ${c ? c.genre : "?"} | ${t.duration.toFixed(1)} s | bpm ${t.detected_bpm}`];
+  L.push("pre: " + t.offline_sections.map(x => `${x.kind}@${fmt(x.start)}`).join(" "));
+  L.push("live: " + t.live_sections.map(x => `${x.kind}@${fmt(x.start)}`).join(" "));
+  if (tl && tl.bars) {
+    L.push(`downbeat ${tl.phase} | first bar ${tl.bars.start[0].toFixed(2)} s | bar ${(240 / tl.bpm).toFixed(3)} s`);
+    for (const k of ["kick", "low", "energy", "high", "tension", "density"])
+      L.push(k + ": " + tl.bars[k].map(v => Math.round(v * 100)).join(","));
+  }
+  return L.join("\n");
+}
+$("report").onclick = async () => {
+  const txt = reportText();
+  try { await navigator.clipboard.writeText(txt); $("report").textContent = "Copied ✓"; }
+  catch (e) {
+    let ta = $("reportBox");
+    if (!ta) { ta = document.createElement("textarea"); ta.id = "reportBox"; ta.rows = 6; ta.style.cssText = "width:100%;font:11px var(--mono);background:var(--panel);color:var(--fg);border:1px solid var(--line);border-radius:8px"; $("report").closest(".bar").after(ta); }
+    ta.value = txt; ta.focus(); ta.select(); $("report").textContent = "Select + copy below";
+  }
+  setTimeout(() => $("report").textContent = "Copy analysis", 2500);
+};
+
 // ---------- your own track ----------
 const busy = (t, p, sub) => { $("busy").hidden = false; $("busyT").textContent = t; $("busyP").style.width = Math.round(p * 100) + "%"; if (sub) $("busyS").textContent = sub; };
 const yieldUI = () => new Promise(r => setTimeout(r, 0));
@@ -536,7 +561,7 @@ async function useFile(file) {
     const r = await Jaylights.analyzeTrack(mono, sr, $("genre").value, analysisProgress);
     if (cache.mine && cache.mine.url) URL.revokeObjectURL(cache.mine.url);
     meta.tracks.mine = r.track;
-    cache.mine = { states: r.states, genre: $("genre").value, url: URL.createObjectURL(file) };
+    cache.mine = { states: r.states, genre: $("genre").value, url: URL.createObjectURL(file), tl: r.timeline, name: file.name };
     const name = file.name.replace(/\.[^.]+$/, "");
     $("t-mine").hidden = false; $("t-mine").textContent = name.length > 24 ? name.slice(0, 23) + "\u2026" : name;
     await selectTrack("mine");

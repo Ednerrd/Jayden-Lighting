@@ -405,8 +405,11 @@
       mid: dec(robustNorm(F.mid_e)),
       high: dec(robustNorm(F.hat_e.map((v, i) => v * 0.6 + F.snare_e[i] * 0.4))),
     };
-    return new Timeline(duration, bpm, beats, phase, secs, fr / ENV_DECIM, curves,
+    const tl = new Timeline(duration, bpm, beats, phase, secs, fr / ENV_DECIM, curves,
       { kick: on.kick.map(f => frameTime(f, sr)), snare: on.snare.map(f => frameTime(f, sr)), hat: on.hat.map(f => frameTime(f, sr)) });
+    // what the section labeler saw, bar by bar (for the "copy analysis" report)
+    tl.bars = { start: barStarts.map(b => beats[b]), ...M };
+    return tl;
   }
   class Timeline {
     constructor(duration, bpm, beats, phase, sections, envRate, curves, onsets) {
