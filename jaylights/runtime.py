@@ -16,7 +16,7 @@ def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_brows
              frame_hook=None, drop_style: str = "auto"):
     engine = ShowEngine(rig.fixtures, genre)
     ctl = Controls(master=rig.master, strobe_enabled=rig.strobe_enabled, max_strobe_hz=rig.max_strobe_hz,
-                   drop_style=drop_style if drop_style in DROP_STYLES else "auto")
+                   drop_style=drop_style if drop_style in DROP_STYLES else "auto", blinders=rig.blinders_enabled)
     out = make_output(rig.output)
     fps = fps or float(rig.output.get("fps", 40))
 
@@ -34,6 +34,8 @@ def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_brows
             ctl.blackout = not ctl.blackout if v is None else bool(v)
         elif a == "strobe":
             ctl.strobe_enabled = not ctl.strobe_enabled if v is None else bool(v)
+        elif a == "blinders":
+            ctl.blinders = not ctl.blinders if v is None else bool(v)
         elif a == "master":
             ctl.master = max(0.0, min(1.0, float(v)))
         elif a == "movement":
@@ -77,7 +79,7 @@ def run_show(source, rig: Rig, genre: str = "auto", port: int = 8765, open_brows
                 viz.publish({
                     "s": st.to_dict(),
                     "f": [f.effective(s, t0) for f, s in zip(rig.fixtures, states)],
-                    "c": {"blackout": ctl.blackout, "strobe": ctl.strobe_enabled, "master": ctl.master,
+                    "c": {"blackout": ctl.blackout, "strobe": ctl.strobe_enabled, "blinders": ctl.blinders, "master": ctl.master,
                           "movement": ctl.movement, "drop_style": ctl.drop_style,
                           "forced": getattr(getattr(source, "analyzer", None), "forced", None)},
                 })

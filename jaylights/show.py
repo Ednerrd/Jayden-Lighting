@@ -10,10 +10,16 @@ Each section has its own look, like a lighting designer would program it:
                   then BLACKOUT on the last beat before the drop (pre-analyzed mode)
   drop            white impact flash, then one of the DROP_STYLES (pump, chase, split,
                   strobe_hell, fan_blast, rainbow_chase, blackout_stabs, sweep,
-                  half_time_heavy). "auto" rotates a genre-suited subset every 8 bars;
+                  half_time_heavy, crowd_sweep). "auto" rotates a genre-suited subset every 8 bars;
                   Controls.drop_style locks one.
 
 Genre flavour changes palettes and how hard it hits.
+
+Audience facing: movers aim UP during builds and snap to aim AT THE CROWD on the drop impact
+(aiming convention, see fixtures.py: negative dtilt = toward the audience, positive = up).
+Blinders (kind "blinder") are used sparingly: full hit on the drop impact, a swell in the last bar
+of a build when the next section is a known drop, short hits on big snares in half_time_heavy /
+blackout_stabs, downbeat hits in crowd_sweep, otherwise dark.
 """
 
 from __future__ import annotations
@@ -22,7 +28,7 @@ import math
 import random
 from dataclasses import dataclass
 
-from .fixtures import DIMMER, MOVER, STROBE, WASH, Fixture, FixtureState, hsv, mix, wave
+from .fixtures import BLINDER, BLINDER_COLOR, DIMMER, MOVER, STROBE, WASH, Fixture, FixtureState, hsv, mix, wave
 from .state import BREAKDOWN, BUILD, DROP, INTRO, OUTRO, MusicState
 
 WHITE = (1.0, 1.0, 1.0)
@@ -52,15 +58,15 @@ GENRES = {
 # Drop styles. The first beat of every drop is always the white impact; after that the
 # style takes over. "auto" rotates through a genre-appropriate list every 8 bars (32 beats).
 DROP_STYLES = ("pump", "chase", "split", "strobe_hell", "fan_blast", "rainbow_chase",
-               "blackout_stabs", "sweep", "half_time_heavy")
+               "blackout_stabs", "sweep", "half_time_heavy", "crowd_sweep")
 DROP_ROTATION = {
-    "auto":        ("pump", "chase", "split", "fan_blast", "rainbow_chase", "sweep"),
-    "house":       ("pump", "rainbow_chase", "sweep", "chase"),
-    "progressive": ("sweep", "rainbow_chase", "pump", "chase"),
-    "techno":      ("pump", "strobe_hell", "chase", "blackout_stabs"),
-    "trance":      ("sweep", "rainbow_chase", "pump", "fan_blast"),
-    "dubstep":     ("half_time_heavy", "strobe_hell", "blackout_stabs", "fan_blast"),
-    "trap":        ("half_time_heavy", "blackout_stabs", "strobe_hell", "fan_blast"),
+    "auto":        ("pump", "chase", "split", "fan_blast", "crowd_sweep", "rainbow_chase", "sweep"),
+    "house":       ("pump", "crowd_sweep", "rainbow_chase", "sweep", "chase"),
+    "progressive": ("sweep", "crowd_sweep", "rainbow_chase", "pump", "chase"),
+    "techno":      ("pump", "crowd_sweep", "strobe_hell", "chase", "blackout_stabs"),
+    "trance":      ("sweep", "crowd_sweep", "rainbow_chase", "pump", "fan_blast"),
+    "dubstep":     ("half_time_heavy", "strobe_hell", "crowd_sweep", "blackout_stabs", "fan_blast"),
+    "trap":        ("half_time_heavy", "blackout_stabs", "crowd_sweep", "strobe_hell", "fan_blast"),
     "dnb":         ("fan_blast", "chase", "strobe_hell", "pump"),
 }
 
@@ -73,6 +79,7 @@ class Controls:
     max_strobe_hz: float = 10.0
     movement: float = 1.0     # 0 = movers stay home
     drop_style: str = "auto"  # "auto" (genre rotation) or one of DROP_STYLES to lock it
+    blinders: bool = True     # False = audience blinders stay dark (independent of the strobe switch)
 
 
 class ShowEngine:
@@ -121,6 +128,7 @@ class ShowEngine:
 
     # ------------------------------------------------------------------
     def _move(self, f: Fixture, fs: FixtureState, dpan: float, dtilt: float):
+        """dtilt > 0 aims UP at the ceiling, dtilt < 0 aims at the AUDIENCE (-1 = straight at the crowd)."""
         fs.pan = f.pan_center + dpan * f.pan_span
         fs.tilt = f.tilt_center + dtilt * f.tilt_span * f.tilt_up
 
@@ -158,8 +166,12 @@ class ShowEngine:
         p = st.section_progress
         if st.next_section == DROP and st.beats_to_next is not None:
             if st.beats_to_next <= 1.0:
-                fs.intensity = 0.0       # the breath before the drop
+                fs.intensity = 0.0       # the breath before the drop (blinders too)
                 self._move(f, fs, 0.0, 1.0)
+                return
+            if f.kind == BLINDER and st.beats_to_next <= 4.0:
+                # last bar before a KNOWN drop: blinders swell 0 -> 0.5, then go dark for the final beat
+                fs.intensity = 0.5 * (4.0 - st.beats_to_next) / 3.0
                 return
         div = 1 if p < 0.25 else 2 if p < 0.5 else 4 if p < 0.75 else 8
         color = mix(self.palette[0], WHITE, p ** 1.5)
@@ -194,8 +206,9 @@ class ShowEngine:
             # IMPACT (every style): everything white, full, decaying over the first beat
             hit = 1.0 - 0.5 * sb
             fs.set_color(WHITE)
-            fs.intensity = hit if f.kind != STROBE else 1.0 - sb
-            self._move(f, fs, 0.0, -0.4)
+            fs.intensity = hit if f.kind not in (STROBE, BLINDER) else 1.0 - sb
+            # every mover snaps to aim straight at the crowd, slightly fanned out
+            self._move(f, fs, (f.x - 0.5) * 0.8, -1.0)
             return
         getattr(self, "_d_" + self._style)(st, f, fs)
 
@@ -219,7 +232,7 @@ class ShowEngine:
             fs.set_color(B if f.index % 2 else A)
             fs.intensity = 0.5 + 0.5 * k
             mirror = -1 if f.index % 2 else 1
-            self._move(f, fs, mirror * math.sin(2 * math.pi * st.beat / 4), -0.5 + 0.8 * k)
+            self._move(f, fs, mirror * math.sin(2 * math.pi * st.beat / 4), -0.3 - 0.6 * k)   # kick = toward the crowd
         elif f.kind == STROBE:
             fs.intensity = self.strobe_amt * max(st.snare ** 2 * self.snare_amt, (k ** 4) * 0.5)
             fs.set_color(WHITE)
@@ -331,10 +344,12 @@ class ShowEngine:
         elif f.kind == MOVER:
             fs.set_color(WHITE if sn > k else (B if f.index % 2 else A))
             fs.intensity = v
-            self._move(f, fs, (1 if (bi + f.index) % 2 else -1) * 0.9, 0.3)
+            self._move(f, fs, (1 if (bi + f.index) % 2 else -1) * 0.9, -0.9 if sn > k else 0.3)
         elif f.kind == STROBE:
             fs.set_color(WHITE)
             fs.intensity = self.strobe_amt if sn > 0.5 else 0.0
+        elif f.kind == BLINDER:
+            fs.intensity = 0.8 * sn if sn > 0.6 and sn > k else 0.0   # only the big snares
 
     def _d_sweep(self, st, f, fs):
         """smooth and slow: movers sweep wide arcs while washes crossfade colour in a travelling wave"""
@@ -362,15 +377,38 @@ class ShowEngine:
         elif f.kind == MOVER:
             fs.set_color(B if f.index % 2 else A)
             fs.intensity = 0.4 + 0.6 * max(k, sn)
-            self._move(f, fs, math.sin(2 * math.pi * (st.beat / 16 + f.index * 0.25)) * 0.7, 0.2 + 0.7 * sn)
+            self._move(f, fs, math.sin(2 * math.pi * (st.beat / 16 + f.index * 0.25)) * 0.7, 0.2 - 1.2 * sn)  # snare slam = at the crowd
         elif f.kind == STROBE:
             fs.set_color(WHITE)
             fs.intensity = self.strobe_amt * sn ** 2
             fs.strobe_hz = 14.0 if sn > 0.5 else 0.0
+        elif f.kind == BLINDER:
+            fs.intensity = 0.8 * sn if sn > 0.6 else 0.0   # short punchy hit on big snares
+
+    def _d_crowd_sweep(self, st, f, fs):
+        """movers aimed into the crowd sweeping across it in mirrored pairs (1 bar per cycle), pumping on the
+        kick; blinders flash on every downbeat; strobes on snares"""
+        A, B = self.palette[0], self.palette[-1]
+        bi, k = int(st.beat), st.kick
+        if f.kind in (WASH, DIMMER):
+            fs.set_color(A if (bi + f.index) % 2 == 0 else B)
+            fs.intensity = max(0.15 + 0.85 * k, st.snare * self.snare_amt * 0.9)
+        elif f.kind == MOVER:
+            fs.set_color(B if f.index % 2 else A)
+            fs.intensity = 0.6 + 0.4 * k
+            mirror = -1 if f.index % 2 else 1
+            self._move(f, fs, mirror * math.sin(2 * math.pi * st.beat / 4) * 0.9, -0.8 - 0.2 * k)
+        elif f.kind == STROBE:
+            fs.set_color(WHITE)
+            fs.intensity = self.strobe_amt * st.snare ** 2 * self.snare_amt
+        elif f.kind == BLINDER:
+            fs.intensity = 0.6 * (1.0 - st.beat_in_bar / 0.15) if st.beat_in_bar < 0.15 else 0.0
 
     # ------------------------------------------------------------------
     def _post(self, st: MusicState, ctl: Controls, out: list[FixtureState]) -> list[FixtureState]:
         smooth_move = 0.08 if st.section == BREAKDOWN else 0.3
+        if st.section == DROP and st.section_beats < 1.0:
+            smooth_move = 0.55    # the drop impact snaps the movers round to the crowd
         for f, fs, sm in zip(self.fixtures, out, self._smooth):
             # movement: scale by the movement control, then smooth (saves the motors)
             fs.pan = f.pan_center + (fs.pan - f.pan_center) * ctl.movement
@@ -387,6 +425,11 @@ class ShowEngine:
                 if f.kind == STROBE:
                     fs.intensity *= 0.3
             fs.strobe_hz = min(fs.strobe_hz, ctl.max_strobe_hz)
+            if f.kind == BLINDER:
+                fs.set_color(BLINDER_COLOR)
+                fs.strobe_hz = 0.0
+                if not ctl.blinders:
+                    fs.intensity = 0.0
             fs.intensity = 0.0 if ctl.blackout else min(1.0, max(0.0, fs.intensity)) * ctl.master
         self._first = False
         return out

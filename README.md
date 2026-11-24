@@ -84,6 +84,7 @@ Leave it on `auto` for a minute at the start. The status shows **● LOCKED** on
 |---|---|
 | **BLACKOUT** `B` | All lights off |
 | **STROBES** `S` | Strobes on/off |
+| **BLINDERS** `L` | Audience blinders on/off |
 | MASTER / MOVE sliders | Overall brightness / how much the movers move |
 | **AUTO / GROOVE / BREAK / BUILD / DROP** `0-4` | Override the section (live mode). Hit DROP yourself if you want it perfect. |
 | **DROP STYLE** dropdown | Lock one drop look, or leave on `auto` (see below) |
@@ -113,13 +114,28 @@ suits your `--genre` every 8 bars. Or lock one with `--drop-style NAME`, or with
 | `blackout_stabs` | everything dark except hard cut-off stabs on every kick and snare |
 | `sweep` | slow, smooth mover sweeps and colour crossfades (melodic / progressive drops) |
 | `half_time_heavy` | solid hit on the kick, huge white-ish slam + strobe on the snare, slow movers (dubstep / trap) |
+| `crowd_sweep` | movers aimed into the crowd sweeping in mirrored pairs (1 bar/cycle), washes pump on the kick, blinders on every downbeat, strobes on snares |
 
-Auto rotations: house `pump, rainbow_chase, sweep, chase`; progressive `sweep, rainbow_chase, pump, chase`;
-techno `pump, strobe_hell, chase, blackout_stabs`; trance `sweep, rainbow_chase, pump, fan_blast`;
-dubstep `half_time_heavy, strobe_hell, blackout_stabs, fan_blast`; trap `half_time_heavy, blackout_stabs, strobe_hell, fan_blast`;
+Auto rotations: house `pump, crowd_sweep, rainbow_chase, sweep, chase`; progressive `sweep, crowd_sweep, rainbow_chase, pump, chase`;
+techno `pump, crowd_sweep, strobe_hell, chase, blackout_stabs`; trance `sweep, crowd_sweep, rainbow_chase, pump, fan_blast`;
+dubstep `half_time_heavy, strobe_hell, crowd_sweep, blackout_stabs, fan_blast`; trap `half_time_heavy, blackout_stabs, crowd_sweep, strobe_hell, fan_blast`;
 dnb `fan_blast, chase, strobe_hell, pump`. Every style works with any mix of lights (pars only, movers, strobes, floor
 uplights): each fixture type has its own part, so a mover-heavy style still hits hard on pars alone. Flash rates obey
 `max_strobe_hz`, and `--no-strobe` also stops the wash flashing from running faster than 2 per second.
+
+### Blinders and crowd aiming
+Lights that face the audience, like a real EDM show.
+
+- **Blinders** (`kind = "blinder"`, profiles `blinder_1ch` / `blinder_4ch`; 2/4/8-lite warm-white lamps aimed at the
+  crowd) are used sparingly: a full hit on the drop impact (decaying over a beat), a swell up to ~50% in the last bar
+  of a build (pre-analyzed mode only, where the drop is known; dark again for the final blackout beat), short hits on
+  big snares in `half_time_heavy` / `blackout_stabs`, and on every downbeat in `crowd_sweep`. Otherwise they stay off.
+- **Movers** aim *up* during builds and snap *at the crowd* on the drop impact (`dtilt < 0` = toward the audience,
+  `> 0` = toward the ceiling; set `tilt_up` per fixture so "up" is right for how it hangs).
+- Turn blinders off with `--no-blinders`, `[safety] blinders = false` in `rig.toml`, or the BLINDERS button. This is
+  independent of `--no-strobe`.
+
+⚠️ **Blinders are very bright.** Don't point them at people's eyes at close range at home, and keep `master` low.
 
 ### Tuning
 - Lights a bit late? Raise `--offset` (default 30 ms). It fires the lights earlier to cover DMX and LED lag.
