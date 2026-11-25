@@ -294,4 +294,79 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             merged[-1].end_bar = s.end_bar
         else:
             merged.append(s)
-    return merged
+    return _bright_drops(merged, m)
+
+
+def _bright_drops(secs: list[Section], m: dict[str, np.ndarray]) -> list[Section]:
+    """Drops that hit with the kick and the growl instead of the sub.
+
+    Trap / bass-house drops are often a gritty mid-range bass with LESS sub than the
+    hook-y groove before them (Chicken Soup: the groove has the most sub in the track).
+    The sub rule misses those. What still gives them away: the kick is pinned for the
+    whole stretch and it's much brighter / noisier than the groove. So an 8+ bar stretch
+    like that, which isn't already a drop, becomes one, and the build runs back to the
+    short gap that ended the groove before it.
+    """
+    grooves = [s for s in secs if s.kind == GROOVE]
+    if not grooves:
+        return secs
+    g = grooves[0]
+    gt = m["tension"][g.start_bar:g.end_bar].mean()
+    gl = m["low"][g.start_bar:g.end_bar].mean()
+    n = len(m["kick"])
+    flags = (m["kick"] >= 1.4) & (m["tension"] >= gt + 0.08)
+    thr = np.percentile(m["low"], 90) - 0.15
+    labels = []
+    for s in secs:
+        labels += [s.kind] * (s.end_bar - s.start_bar)
+    changed = False
+    # bridge gaps of <= 2 bars (a wobble that lets go for a bar mid-drop)
+    stretches = []
+    for i in np.flatnonzero(flags):
+        if stretches and i - stretches[-1][1] <= 2:
+            stretches[-1][1] = i + 1
+        else:
+            stretches.append([int(i), int(i) + 1])
+    for a, b in stretches:
+        # a drop starts solid: 3 slammed bars in a row (kick hits inside a snare roll don't count)
+        while a + 3 <= b and not flags[a:a + 3].all():
+            a += 1
+        # a 1-2 bar dip at the very end that isn't anything else yet belongs to the drop
+        k = 0
+        while b + k < n and k < 2 and labels[b + k] == BREAKDOWN:
+            k += 1
+        if k and (b + k >= n or labels[b + k] != BREAKDOWN):
+            b += k
+        if b - a < 8 or a < g.end_bar or DROP in labels[a:min(n, b + 2)]:
+            continue  # too short, still the intro, or the run-up to a drop we already have
+        if m["low"][a:b].mean() >= gl:
+            continue  # as much sub as the groove: the sub rule already had its say
+        if _slope(m["tension"][a:b] + 0.5 * m["density"][a:b]) > 0.015:
+            continue  # still climbing (snare roll speeding up): that's a kick build, not a drop
+        # skip a pause bar right at the front (no sub, kick still ticking): the drop hits after it
+        if m["low"][a] < thr and a + 1 < b and m["low"][a + 1] >= thr:
+            a += 1
+        # build: back to the last energy gap (a 1-bar dip) in the 12 bars before the drop
+        lo = max(0, a - 12)
+        gaps = [i for i in range(lo, a - 2) if m["energy"][i] < 0.5]
+        start = gaps[-1] + 1 if gaps else max(0, a - 8)
+        start = max(start, max((i + 1 for i in range(start) if labels[i] == DROP), default=0))
+        # whatever old build/drop guess the new build/drop cuts through becomes groove
+        for s in secs:
+            if s.kind in (BUILD, DROP) and s.start_bar < b and s.end_bar > start:
+                for i in range(s.start_bar, s.end_bar):
+                    labels[i] = GROOVE
+        for i in range(start, a):
+            labels[i] = BUILD
+        for i in range(a, b):
+            labels[i] = DROP
+        changed = True
+    if not changed:
+        return secs
+    out: list[Section] = []
+    for i, lab in enumerate(labels):
+        if out and out[-1].kind == lab:
+            out[-1].end_bar = i + 1
+        else:
+            out.append(Section(lab, i, i + 1))
+    return out

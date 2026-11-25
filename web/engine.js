@@ -397,7 +397,61 @@
     if (out.length && (out[0].kind === GROOVE || out[0].kind === BREAKDOWN)) out[0].kind = INTRO;
     const merged = [];
     for (const s of out) { const m = merged[merged.length - 1]; if (m && m.kind === s.kind) m.end = s.end; else merged.push({ ...s }); }
-    return merged;
+    return brightDrops(merged, M);
+  }
+
+  // Drops that hit with the kick and the growl instead of the sub (trap / bass house:
+  // Chicken Soup's groove has more sub than its drops). An 8+ bar stretch with the kick
+  // pinned and much brighter than the groove, not already a drop, becomes one; its build
+  // runs back to the short gap that ended the groove before it.
+  function brightDrops(secs, M) {
+    const g = secs.find(s => s.kind === GROOVE);
+    if (!g) return secs;
+    const gt = mean(M.tension, g.start, g.end), gl = mean(M.low, g.start, g.end), n = M.kick.length;
+    const flags = Array.from(M.kick, (k, i) => k >= 1.4 && M.tension[i] >= gt + 0.08);
+    const thr = percentile(M.low, 90) - 0.15;
+    const labels = [];
+    for (const s of secs) for (let i = s.start; i < s.end; i++) labels.push(s.kind);
+    // bridge gaps of <= 2 bars (a wobble that lets go for a bar mid-drop)
+    const stretches = [];
+    flags.forEach((f, i) => {
+      if (!f) return;
+      const l = stretches[stretches.length - 1];
+      if (l && i - l[1] <= 2) l[1] = i + 1; else stretches.push([i, i + 1]);
+    });
+    let changed = false;
+    for (let [a, b] of stretches) {
+      // a drop starts solid: 3 slammed bars in a row (kick hits inside a snare roll don't count)
+      while (a + 3 <= b && !(flags[a] && flags[a + 1] && flags[a + 2])) a++;
+      // a 1-2 bar dip at the very end that isn't anything else yet belongs to the drop
+      let k = 0;
+      while (b + k < n && k < 2 && labels[b + k] === BREAKDOWN) k++;
+      if (k && (b + k >= n || labels[b + k] !== BREAKDOWN)) b += k;
+      // too short, still the intro, or the run-up to a drop we already have
+      if (b - a < 8 || a < g.end || labels.slice(a, Math.min(n, b + 2)).includes(DROP)) continue;
+      if (mean(M.low, a, b) >= gl) continue;  // as much sub as the groove: the sub rule already had its say
+      // still climbing (snare roll speeding up): that's a kick build, not a drop
+      if (slope(Array.from({ length: b - a }, (_, j) => M.tension[a + j] + 0.5 * M.density[a + j])) > 0.015) continue;
+      // skip a pause bar right at the front (no sub, kick still ticking): the drop hits after it
+      if (M.low[a] < thr && a + 1 < b && M.low[a + 1] >= thr) a++;
+      // build: back to the last energy gap (a 1-bar dip) in the 12 bars before the drop
+      let lastGap = -1;
+      for (let i = Math.max(0, a - 12); i < a - 2; i++) if (M.energy[i] < 0.5) lastGap = i;
+      let start = lastGap >= 0 ? lastGap + 1 : Math.max(0, a - 8);
+      let afterDrop = 0; for (let i = 0; i < start; i++) if (labels[i] === DROP) afterDrop = i + 1;
+      start = Math.max(start, afterDrop);
+      // whatever old build/drop guess the new build/drop cuts through becomes groove
+      for (const s of secs) {
+        if ((s.kind === BUILD || s.kind === DROP) && s.start < b && s.end > start) for (let i = s.start; i < s.end; i++) labels[i] = GROOVE;
+      }
+      for (let i = start; i < a; i++) labels[i] = BUILD;
+      for (let i = a; i < b; i++) labels[i] = DROP;
+      changed = true;
+    }
+    if (!changed) return secs;
+    const out = [];
+    labels.forEach((lab, i) => { const l = out[out.length - 1]; if (l && l.kind === lab) l.end = i + 1; else out.push({ kind: lab, start: i, end: i + 1 }); });
+    return out;
   }
   // ---------------------------------------------------------------- offline timeline
   function analyzeOffline(F, range = [90, 190]) {
@@ -963,6 +1017,6 @@
     };
   }
 
-  const api = { BLINDER_COLOR, extractFeatures, analyzeOffline, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
+  const api = { BLINDER_COLOR, extractFeatures, analyzeOffline, labelSections, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Jaylights = api;
 })(typeof self !== "undefined" ? self : globalThis);

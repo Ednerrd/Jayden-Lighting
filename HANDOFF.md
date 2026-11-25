@@ -33,9 +33,11 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - A **short dip of 8 bars or less right before a drop is the build**, even when its last bar is a silent gap. This came from "Not Even Love", build 1:08 to 1:15.
 - **Drops and grooves come in whole 8-bar phrases.** If a build would leave the previous drop or groove at 12 bars, 20 bars and so on, the build starts 4 bars earlier, with the kick still going. This came from "Not Even Love", build 2:15 to 2:29.
 - **After a short dip (8 bars or less), a section at groove loudness is the groove again, not a drop.** Its loudness has to sit closer to the first groove than to the biggest drop. A short dip that keeps the kick going and leads back into the groove counts as groove too. After a long breakdown (16+ bars), the next full section is still a drop. This came from "Not Even Love", groove 1:45 to 2:15.
+- **Bright drops (trap / bass house): a drop can have LESS sub than the groove.** It's an 8+ bar stretch with the kick pinned (kick 1.4 or more) and tension at least 0.08 above the first groove, with gaps of 2 bars or less bridged. It must start with 3 solid bars, come after the first groove, not be the run-up to a drop already found, have less sub than the groove, and not keep climbing (a slope of tension + 0.5 × density above 0.015 means a kick build). Its build runs back to the last 1-bar energy gap. This lives in `_bright_drops` / `brightDrops`. It came from "Chicken Soup" (Skrillex & Habstrakt, Part Native Remix): build 0:28, drop 0:44 to 1:11, groove 1:12 to 1:33, build 1:33, drop 1:47 to 2:14, outro 2:15.
+- Real tracks are checked Python against JS by `tools/real_tracks_js.js` (in a test).
 
 ## Scores (stress suite, auto range)
-- **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 69%.
+- **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 71%.
 - **Live:** tempo 100%, beat F 0.91, downbeat 0.55, drop recall 71%, 0.42 false drops per track, build recall 84%.
 
 ## Open items / next ideas

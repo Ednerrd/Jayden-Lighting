@@ -340,3 +340,44 @@ def test_real_not_even_love_builds():
         a, b = t0 + s.start_bar * bar, t0 + s.end_bar * bar
         if a < 133 and b > 107:  # overlaps 1:47 - 2:13
             assert s.kind == "groove", (s, round(a), round(b))
+
+
+def test_real_chicken_soup_bright_drops():
+    """Trap: the groove has MORE sub than the drops (gritty mid-range growl drops)."""
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 0.05, 1.791  # first downbeat (s), bar length (s) at 134 BPM
+    secs = label_sections(_load_bars("chicken_soup.txt"))
+
+    def kind_at(t):
+        return next(s.kind for s in secs if t0 + s.start_bar * bar <= t < t0 + s.end_bar * bar)
+
+    # user: build 0:28 (more intense 0:36, pause 0:41-0:43), drop 0:44 -> 1:11,
+    # groove 1:12 -> 1:33, build 1:33 -> 1:47, drop 1:47 -> 2:14, outro 2:15
+    for t, want in [(12, "groove"), (25, "groove"), (31, "build"), (38, "build"), (42, "build"),
+                    (46, "drop"), (60, "drop"), (70, "drop"), (75, "groove"), (90, "groove"),
+                    (96, "build"), (104, "build"), (109, "drop"), (130, "drop"), (140, "outro")]:
+        assert kind_at(t) == want, (t, want, secs)
+    drops = [t0 + s.start_bar * bar for s in secs if s.kind == "drop"]
+    builds = [t0 + s.start_bar * bar for s in secs if s.kind == "build"]
+    assert len(drops) == 2 and abs(drops[0] - 44) < 2 and abs(drops[1] - 107) < 2, drops
+    assert len(builds) == 2 and abs(builds[0] - 28) < 2 and abs(builds[1] - 93) < 2, builds
+
+
+def test_real_tracks_python_matches_js():
+    import json
+    import shutil
+    import subprocess
+
+    import pytest
+
+    from jaylights.analysis.sections import label_sections
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    root = _os.path.dirname(_os.path.dirname(__file__))
+    out = subprocess.run(["node", _os.path.join(root, "tools", "real_tracks_js.js")], capture_output=True, text=True, check=True).stdout
+    for line in out.splitlines():
+        r = json.loads(line)
+        py = [[s.kind, s.start_bar, s.end_bar] for s in label_sections(_load_bars(r["name"]))]
+        assert py == r["sections"], (r["name"], py, r["sections"])
