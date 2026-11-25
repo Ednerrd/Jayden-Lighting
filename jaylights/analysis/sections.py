@@ -211,6 +211,40 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
         if not is_drop and groove_power is None:
             groove_power = pw
         kinds.append(DROP if is_drop else GROOVE)
+    # trap: the hook can be as loud as the drop (Love Sosa). The real drops are the ones
+    # that land after a big build, a long stretch with the sub cut out. A section that only
+    # follows a short dip, isn't louder than those drops and is much busier (hi-hat rolls
+    # over the hook vs a half-time 808 drop) is the hook, i.e. groove.
+    big = [i for i in range(1, len(pieces)) if kinds[i] == DROP and not pieces[i - 1][2]
+           and pieces[i - 1][1] - pieces[i - 1][0] >= 6]
+    hooks = []
+    if big:
+        ref_pw = max(power[pieces[i][0]:pieces[i][1]].mean() for i in big)
+        ref_d = max(m["density"][pieces[i][0]:pieces[i][1]].mean() for i in big)
+        for i in range(1, len(pieces)):
+            a, b = pieces[i][0], pieces[i][1]
+            pa, pb, pf, _ = pieces[i - 1]
+            if (kinds[i] == DROP and i not in big and not pf and pb - pa <= 2
+                    and power[a:b].mean() <= ref_pw and m["density"][a:b].mean() >= ref_d + 0.25):
+                kinds[i] = GROOVE
+                hooks.append((a, b))
+    # a 1-2 bar hole between two alike drop halves (a vocal cut) is part of the drop. If the
+    # part before it was still climbing (a snare roll, busier than what follows), that was
+    # the build and the hole is the silence right before the real drop: leave it.
+    for i in range(1, len(pieces) - 1):
+        if kinds[i] == BREAKDOWN and kinds[i - 1] == DROP and kinds[i + 1] == DROP and pieces[i][1] - pieces[i][0] <= 2:
+            (a0, a1), (c0, c1) = pieces[i - 1][:2], pieces[i + 1][:2]
+            if (_slope(tension[a0:a1]) <= 0.015 and abs(power[a0:a1].mean() - power[c0:c1].mean()) < 0.1
+                    and abs(m["density"][a0:a1].mean() - m["density"][c0:c1].mean()) < 0.2):
+                kinds[i] = DROP
+    # the kick slamming back in after the sub was cut is the drop, even while the sub is
+    # still swelling back up for that first bar
+    for i in range(1, len(pieces)):
+        a = pieces[i][0]
+        if (kinds[i] == DROP and not pieces[i - 1][2] and a - pieces[i - 1][0] >= 5
+                and m["kick"][a - 1] >= 1.2 and low[a - 1] >= 0.5 and (low[a - 4:a - 1] < 0.2).all()):
+            pieces[i][0] -= 1
+            pieces[i - 1][1] -= 1
     # a short bass dip that keeps the kick going and leads back into the groove is groove
     for i in range(len(pieces) - 1):
         a, b = pieces[i][0], pieces[i][1]
@@ -294,7 +328,74 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             merged[-1].end_bar = s.end_bar
         else:
             merged.append(s)
-    return _bright_drops(merged, m)
+    secs = _bright_drops(merged, m)
+    grid = _phrase_grid(secs)
+    if grid is None:
+        return secs
+    return _snap_to_grid(_hook_builds(secs, hooks, power, grid), grid)
+
+
+def _phrase_grid(secs: list[Section]):
+    """Which bar (mod 4) phrases start on, taken from the drops: they're the most
+    reliable boundaries, and EDM phrases are 4 bars. Only when every drop agrees: if they
+    don't, at least one of them is off and the grid can't be trusted."""
+    starts = {s.start_bar % PHRASE for s in secs if s.kind == DROP}
+    return starts.pop() if len(starts) == 1 else None
+
+
+def _hook_builds(secs: list[Section], hooks, power: np.ndarray, grid: int) -> list[Section]:
+    """Trap: once the hook ends, everything up to the drop is the build (Love Sosa: hook,
+    then a kick-pinned snare climb, then the sub cuts, then the drop). The build starts on
+    the phrase line where the hook's power falls away."""
+    if not hooks:
+        return secs
+    labels = []
+    for s in secs:
+        labels += [s.kind] * (s.end_bar - s.start_bar)
+    changed = False
+    for ha, hb in hooks:
+        drop = next((s for s in secs if s.kind == DROP and s.start_bar >= hb), None)
+        if drop is None or DROP in labels[hb:drop.start_bar]:
+            continue
+        hook_pw = power[ha:hb].mean()
+        # first phrase line after which no bar is as loud as the hook any more
+        lines = [c for c in range(ha + 2, min(hb + 3, drop.start_bar)) if (c - grid) % PHRASE == 0
+                 and power[c:c + 4].max() < hook_pw - 0.05]
+        if not lines or drop.start_bar - lines[0] > 28:
+            continue
+        start = lines[0]
+        if any(power[c:c + 4].mean() >= hook_pw - 0.1 for c in range(start, drop.start_bar - 3)):
+            continue  # something as big as the hook in between: not one long build
+        for i in range(start, drop.start_bar):
+            labels[i] = BUILD
+        changed = True
+    if not changed:
+        return secs
+    return _from_labels(labels)
+
+
+def _snap_to_grid(secs: list[Section], grid: int) -> list[Section]:
+    """A boundary one bar off the drops' phrase grid moves onto it (a sub that fades a bar
+    early, a 1-bar pause before the groove). Drop starts stay put."""
+    out = [Section(s.kind, s.start_bar, s.end_bar) for s in secs]
+    for i in range(1, len(out)):
+        x = out[i].start_bar
+        if out[i].kind == DROP or (x - grid) % PHRASE not in (1, PHRASE - 1):
+            continue
+        y = x + 1 if (x - grid) % PHRASE == PHRASE - 1 else x - 1
+        if out[i - 1].start_bar < y < out[i].end_bar:
+            out[i - 1].end_bar = out[i].start_bar = y
+    return out
+
+
+def _from_labels(labels: list[str]) -> list[Section]:
+    out: list[Section] = []
+    for i, lab in enumerate(labels):
+        if out and out[-1].kind == lab:
+            out[-1].end_bar = i + 1
+        else:
+            out.append(Section(lab, i, i + 1))
+    return out
 
 
 def _bright_drops(secs: list[Section], m: dict[str, np.ndarray]) -> list[Section]:
@@ -365,10 +466,4 @@ def _bright_drops(secs: list[Section], m: dict[str, np.ndarray]) -> list[Section
         changed = True
     if not changed:
         return secs
-    out: list[Section] = []
-    for i, lab in enumerate(labels):
-        if out and out[-1].kind == lab:
-            out[-1].end_bar = i + 1
-        else:
-            out.append(Section(lab, i, i + 1))
-    return out
+    return _from_labels(labels)

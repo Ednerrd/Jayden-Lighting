@@ -366,6 +366,31 @@ def test_real_chicken_soup_bright_drops():
     assert len(builds) == 2 and abs(builds[0] - 28) < 2 and abs(builds[1] - 93) < 2, builds
 
 
+def test_real_love_sosa_hook_vs_drop():
+    """Trap: the hook (vocal + hi-hat rolls) is as loud as the drop. The drops are what land
+    after the sub cuts out; the build runs from the end of the hook to the drop."""
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 1.34, 1.714  # first downbeat (s), bar length (s) at 140 BPM
+    secs = label_sections(_load_bars("love_sosa.txt"))
+
+    def kind_at(t):
+        return next(s.kind for s in secs if t0 + s.start_bar * bar <= t < t0 + s.end_bar * bar)
+
+    # user: intro -> 0:26, groove 0:26 -> 0:41, build 0:41 (2nd build 0:55), drop 1:01 -> 1:29
+    # (vocal cut ~1:15 stays drop), groove 1:29 -> 2:10 (hook again ~1:44), build 2:10
+    # (2nd build 2:37), drop 2:51 -> 3:20, outro
+    for t, want in [(10, "intro"), (30, "groove"), (38, "groove"), (45, "build"), (52, "build"), (58, "build"),
+                    (63, "drop"), (75, "drop"), (85, "drop"), (95, "groove"), (106, "groove"), (125, "groove"),
+                    (2 * 60 + 15, "build"), (2 * 60 + 40, "build"), (2 * 60 + 48, "build"),
+                    (2 * 60 + 53, "drop"), (3 * 60 + 10, "drop"), (3 * 60 + 25, "outro")]:
+        assert kind_at(t) == want, (t, want, secs)
+    starts = lambda k: [t0 + s.start_bar * bar for s in secs if s.kind == k]
+    drops, builds = starts("drop"), starts("build")
+    assert len(drops) == 2 and abs(drops[0] - 61) < 1 and abs(drops[1] - 171) < 1, drops
+    assert len(builds) == 2 and abs(builds[0] - 41) < 1 and abs(builds[1] - 130) < 1, builds
+
+
 def test_real_tracks_python_matches_js():
     import json
     import shutil

@@ -351,6 +351,39 @@
       if (!isDrop && groovePower === null) groovePower = pw;
       return isDrop ? DROP : GROOVE;
     });
+    // trap: the hook can be as loud as the drop (Love Sosa). The real drops land after a big
+    // build (a long stretch with the sub cut). A section that only follows a short dip, isn't
+    // louder than those drops and is much busier (hi-hat rolls over the hook) is the hook = groove.
+    const big = [];
+    for (let i = 1; i < pieces.length; i++) if (kinds[i] === DROP && !pieces[i - 1][2] && pieces[i - 1][1] - pieces[i - 1][0] >= 6) big.push(i);
+    const hooks = [];
+    if (big.length) {
+      const refPw = Math.max(...big.map(i => mean(power, pieces[i][0], pieces[i][1])));
+      const refD = Math.max(...big.map(i => mean(M.density, pieces[i][0], pieces[i][1])));
+      for (let i = 1; i < pieces.length; i++) {
+        const [a, b] = pieces[i], [pa, pb, pf] = pieces[i - 1];
+        if (kinds[i] === DROP && !big.includes(i) && !pf && pb - pa <= 2 && mean(power, a, b) <= refPw && mean(M.density, a, b) >= refD + 0.25) {
+          kinds[i] = GROOVE; hooks.push([a, b]);
+        }
+      }
+    }
+    // a 1-2 bar hole between two alike drop halves (a vocal cut) is part of the drop. If the part
+    // before it was still climbing (a snare roll, busier than what follows), that was the build
+    // and the hole is the silence right before the real drop: leave it.
+    for (let i = 1; i < pieces.length - 1; i++) {
+      if (kinds[i] === BREAKDOWN && kinds[i - 1] === DROP && kinds[i + 1] === DROP && pieces[i][1] - pieces[i][0] <= 2) {
+        const [a0, a1] = pieces[i - 1], [c0, c1] = pieces[i + 1];
+        if (slope(tension.slice(a0, a1)) <= 0.015 && Math.abs(mean(power, a0, a1) - mean(power, c0, c1)) < 0.1
+            && Math.abs(mean(M.density, a0, a1) - mean(M.density, c0, c1)) < 0.2) kinds[i] = DROP;
+      }
+    }
+    // the kick slamming back in after the sub was cut is the drop, even while the sub is still
+    // swelling back up for that first bar
+    for (let i = 1; i < pieces.length; i++) {
+      const a = pieces[i][0];
+      if (kinds[i] === DROP && !pieces[i - 1][2] && a - pieces[i - 1][0] >= 5 && M.kick[a - 1] >= 1.2 && low[a - 1] >= 0.5
+          && low[a - 4] < 0.2 && low[a - 3] < 0.2 && low[a - 2] < 0.2) { pieces[i][0]--; pieces[i - 1][1]--; }
+    }
     // a short bass dip that keeps the kick going and leads back into the groove is groove
     for (let i = 1; i < pieces.length - 1; i++) {
       if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && pieces[i][1] - pieces[i][0] <= 8 && mean(M.kick, pieces[i][0], pieces[i][1]) >= 0.6) kinds[i] = GROOVE;
@@ -397,7 +430,63 @@
     if (out.length && (out[0].kind === GROOVE || out[0].kind === BREAKDOWN)) out[0].kind = INTRO;
     const merged = [];
     for (const s of out) { const m = merged[merged.length - 1]; if (m && m.kind === s.kind) m.end = s.end; else merged.push({ ...s }); }
-    return brightDrops(merged, M);
+    const secs = brightDrops(merged, M), grid = phraseGrid(secs);
+    if (grid === null) return secs;
+    return snapToGrid(hookBuilds(secs, hooks, power, grid), grid);
+  }
+
+  // Which bar (mod 4) phrases start on, from the drops (the most reliable boundaries). Only
+  // when every drop agrees: if they don't, one of them is off and the grid can't be trusted.
+  function phraseGrid(secs) {
+    const starts = new Set(secs.filter(s => s.kind === DROP).map(s => mod(s.start, PHRASE)));
+    return starts.size === 1 ? [...starts][0] : null;
+  }
+  function fromLabels(labels) {
+    const out = [];
+    labels.forEach((lab, i) => { const l = out[out.length - 1]; if (l && l.kind === lab) l.end = i + 1; else out.push({ kind: lab, start: i, end: i + 1 }); });
+    return out;
+  }
+  // Trap: once the hook ends, everything up to the drop is the build (Love Sosa: hook, then a
+  // kick-pinned snare climb, then the sub cuts, then the drop). The build starts on the phrase
+  // line where the hook's power falls away.
+  function hookBuilds(secs, hooks, power, grid) {
+    if (!hooks.length) return secs;
+    const labels = [];
+    for (const s of secs) for (let i = s.start; i < s.end; i++) labels.push(s.kind);
+    const n = power.length;
+    let changed = false;
+    for (const [ha, hb] of hooks) {
+      const drop = secs.find(s => s.kind === DROP && s.start >= hb);
+      if (!drop || labels.slice(hb, drop.start).includes(DROP)) continue;
+      const hookPw = mean(power, ha, hb);
+      // first phrase line after which no bar is as loud as the hook any more
+      const lines = [];
+      for (let c = ha + 2; c < Math.min(hb + 3, drop.start); c++) {
+        if (mod(c - grid, PHRASE) !== 0) continue;
+        let mx = -Infinity; for (let j = c; j < Math.min(n, c + 4); j++) mx = Math.max(mx, power[j]);
+        if (mx < hookPw - 0.05) lines.push(c);
+      }
+      if (!lines.length || drop.start - lines[0] > 28) continue;
+      const start = lines[0];
+      let loud = false;  // something as big as the hook in between: not one long build
+      for (let c = start; c < drop.start - 3; c++) if (mean(power, c, c + 4) >= hookPw - 0.1) loud = true;
+      if (loud) continue;
+      for (let i = start; i < drop.start; i++) labels[i] = BUILD;
+      changed = true;
+    }
+    return changed ? fromLabels(labels) : secs;
+  }
+  // A boundary one bar off the drops' phrase grid moves onto it (a sub that fades a bar early,
+  // a 1-bar pause before the groove). Drop starts stay put.
+  function snapToGrid(secs, grid) {
+    const out = secs.map(s => ({ ...s }));
+    for (let i = 1; i < out.length; i++) {
+      const x = out[i].start, r = mod(x - grid, PHRASE);
+      if (out[i].kind === DROP || (r !== 1 && r !== PHRASE - 1)) continue;
+      const y = r === PHRASE - 1 ? x + 1 : x - 1;
+      if (out[i - 1].start < y && y < out[i].end) { out[i - 1].end = y; out[i].start = y; }
+    }
+    return out;
   }
 
   // Drops that hit with the kick and the growl instead of the sub (trap / bass house:
@@ -450,10 +539,7 @@
       for (let i = a; i < b; i++) labels[i] = DROP;
       changed = true;
     }
-    if (!changed) return secs;
-    const out = [];
-    labels.forEach((lab, i) => { const l = out[out.length - 1]; if (l && l.kind === lab) l.end = i + 1; else out.push({ kind: lab, start: i, end: i + 1 }); });
-    return out;
+    return changed ? fromLabels(labels) : secs;
   }
   // ---------------------------------------------------------------- offline timeline
   function analyzeOffline(F, range = [90, 190]) {
