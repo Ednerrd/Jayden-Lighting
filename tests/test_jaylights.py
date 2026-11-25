@@ -352,15 +352,17 @@ def test_real_chicken_soup_bright_drops():
     def kind_at(t):
         return next(s.kind for s in secs if t0 + s.start_bar * bar <= t < t0 + s.end_bar * bar)
 
-    # user: build 0:28 (more intense 0:36, pause 0:41-0:43), drop 0:44 -> 1:11,
-    # groove 1:12 -> 1:33, build 1:33 -> 1:47, drop 1:47 -> 2:14, outro 2:15
+    # user: build 0:28, a 2nd more intense build 0:36 (still build, not a drop!), the beat
+    # pauses at the peak 0:41, drop 0:43 -> 1:11, groove 1:11 -> 1:33, build 1:33 (pause
+    # ~1:45), drop ~1:47 -> 2:15, outro. Second half repeats the first exactly, 36 bars later.
     for t, want in [(12, "groove"), (25, "groove"), (31, "build"), (38, "build"), (42, "build"),
-                    (46, "drop"), (60, "drop"), (70, "drop"), (75, "groove"), (90, "groove"),
-                    (96, "build"), (104, "build"), (109, "drop"), (130, "drop"), (140, "outro")]:
+                    (44, "drop"), (60, "drop"), (70, "drop"), (75, "groove"), (90, "groove"),
+                    (96, "build"), (106, "build"), (109, "drop"), (130, "drop"), (140, "outro")]:
         assert kind_at(t) == want, (t, want, secs)
     drops = [t0 + s.start_bar * bar for s in secs if s.kind == "drop"]
     builds = [t0 + s.start_bar * bar for s in secs if s.kind == "build"]
-    assert len(drops) == 2 and abs(drops[0] - 44) < 2 and abs(drops[1] - 107) < 2, drops
+    # the first drop opens on a sub-less bar right after the pause bar: must not be skipped
+    assert len(drops) == 2 and abs(drops[0] - 43) < 1 and abs(drops[1] - 107.5) < 1, drops
     assert len(builds) == 2 and abs(builds[0] - 28) < 2 and abs(builds[1] - 93) < 2, builds
 
 

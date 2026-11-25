@@ -343,8 +343,10 @@ def _bright_drops(secs: list[Section], m: dict[str, np.ndarray]) -> list[Section
             continue  # as much sub as the groove: the sub rule already had its say
         if _slope(m["tension"][a:b] + 0.5 * m["density"][a:b]) > 0.015:
             continue  # still climbing (snare roll speeding up): that's a kick build, not a drop
-        # skip a pause bar right at the front (no sub, kick still ticking): the drop hits after it
-        if m["low"][a] < thr and a + 1 < b and m["low"][a + 1] >= thr:
+        # the pause at the peak of the build: the bar where the sub JUST cut out after a heavy
+        # build bar. The drop hits right after it. If the sub was already out the bar before,
+        # that was the pause and this bar is the drop (some drops open on a sub-less bar).
+        if m["low"][a] < thr and 0 < a and m["low"][a - 1] >= thr and a + 1 < b and m["low"][a + 1] >= thr:
             a += 1
         # build: back to the last energy gap (a 1-bar dip) in the 12 bars before the drop
         lo = max(0, a - 12)

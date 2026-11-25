@@ -432,8 +432,10 @@
       if (mean(M.low, a, b) >= gl) continue;  // as much sub as the groove: the sub rule already had its say
       // still climbing (snare roll speeding up): that's a kick build, not a drop
       if (slope(Array.from({ length: b - a }, (_, j) => M.tension[a + j] + 0.5 * M.density[a + j])) > 0.015) continue;
-      // skip a pause bar right at the front (no sub, kick still ticking): the drop hits after it
-      if (M.low[a] < thr && a + 1 < b && M.low[a + 1] >= thr) a++;
+      // the pause at the peak of the build: the bar where the sub JUST cut out after a heavy
+      // build bar. The drop hits right after it. If the sub was already out the bar before,
+      // that was the pause and this bar is the drop (some drops open on a sub-less bar).
+      if (M.low[a] < thr && a > 0 && M.low[a - 1] >= thr && a + 1 < b && M.low[a + 1] >= thr) a++;
       // build: back to the last energy gap (a 1-bar dip) in the 12 bars before the drop
       let lastGap = -1;
       for (let i = Math.max(0, a - 12); i < a - 2; i++) if (M.energy[i] < 0.5) lastGap = i;
