@@ -344,13 +344,16 @@
       const pw = mean(power, a, b);
       let isDrop = afterGap && pw >= top - margin;
       // back at groove level (closer to the groove than the biggest drop) = groove again
-      if (isDrop && groovePower !== null && pw < (groovePower + top) / 2) isDrop = false;
+      // ...but only after a short dip (<= 8 bars). A real breakdown runs 16+ bars, and
+      // whatever comes after one is a drop even when it's no louder than the groove
+      const shortDip = i > 0 && !pieces[i - 1][2] && pieces[i - 1][1] - pieces[i - 1][0] <= 8;
+      if (isDrop && shortDip && groovePower !== null && pw < (groovePower + top) / 2) isDrop = false;
       if (!isDrop && groovePower === null) groovePower = pw;
       return isDrop ? DROP : GROOVE;
     });
-    // a bass dip that keeps the kick going and leads back into the groove is still groove
+    // a short bass dip that keeps the kick going and leads back into the groove is groove
     for (let i = 1; i < pieces.length - 1; i++) {
-      if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && mean(M.kick, pieces[i][0], pieces[i][1]) >= 0.6) kinds[i] = GROOVE;
+      if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && pieces[i][1] - pieces[i][0] <= 8 && mean(M.kick, pieces[i][0], pieces[i][1]) >= 0.6) kinds[i] = GROOVE;
     }
     const out = [], last = () => out[out.length - 1];
     pieces.forEach(([a, b, f], i) => {

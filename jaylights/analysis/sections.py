@@ -202,16 +202,19 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
         pw = power[a:b].mean()
         is_drop = after_gap and pw >= top - margin
         # a section that comes back at groove level (closer to the groove than to the
-        # biggest drop) is the groove again, even right after a dip
-        if is_drop and groove_power is not None and pw < (groove_power + top) / 2:
+        # biggest drop) is the groove again, even right after a dip...
+        # ...but only after a short dip (<= 8 bars). A real breakdown runs 16+ bars, and
+        # whatever comes after one is a drop even when it's no louder than the groove
+        short_dip = i > 0 and not pieces[i - 1][2] and pieces[i - 1][1] - pieces[i - 1][0] <= 8
+        if is_drop and short_dip and groove_power is not None and pw < (groove_power + top) / 2:
             is_drop = False
         if not is_drop and groove_power is None:
             groove_power = pw
         kinds.append(DROP if is_drop else GROOVE)
-    # a bass dip that keeps the kick going and leads back into the groove is still groove
+    # a short bass dip that keeps the kick going and leads back into the groove is groove
     for i in range(len(pieces) - 1):
         a, b = pieces[i][0], pieces[i][1]
-        if kinds[i] == BREAKDOWN and kinds[i + 1] == GROOVE and i > 0 and m["kick"][a:b].mean() >= 0.6:
+        if kinds[i] == BREAKDOWN and kinds[i + 1] == GROOVE and i > 0 and b - a <= 8 and m["kick"][a:b].mean() >= 0.6:
             kinds[i] = GROOVE
 
     out: list[Section] = []
