@@ -397,6 +397,42 @@ def test_real_love_sosa_hook_vs_drop():
     assert len(builds) == 2 and abs(builds[0] - 41) < 1 and abs(builds[1] - 130) < 1, builds
 
 
+def test_real_breathe_it_out():
+    """Melodic dubstep (Seven Lions & Fiora, 150 BPM): a long kick-running breakdown after a short intro, a
+    short sub fade (breakdown) before the 2nd groove, a build that runs into a dip, and a FAKE-OUT: a loud
+    8-bar "drop" at 2:46 that leads straight into build 2 and the real, brighter drop at 3:19."""
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 0.03, 1.6
+    secs = label_sections(_load_bars("breathe_it_out.txt"))
+
+    def kind_at(t):
+        return next(s.kind for s in secs if t0 + s.start_bar * bar <= t < t0 + s.end_bar * bar)
+
+    # user: intro 0:00, breakdown 0:06 (kick going, sub and energy under the groove), groove 0:56,
+    # breakdown 1:49 (sub fades), groove 2:01, build 2:26, breakdown 2:40, groove 2:46 (the fake-out),
+    # build 2:59, drop 3:19 (the only one), outro 4:03
+    for t, want in [(3, "intro"), (10, "breakdown"), (40, "breakdown"), (53, "breakdown"), (62, "groove"), (90, "groove"),
+                    (105, "groove"), (112, "breakdown"), (118, "breakdown"), (125, "groove"), (140, "groove"),
+                    (152, "build"), (165, "breakdown"), (170, "groove"), (175, "groove"), (182, "build"), (192, "build"),
+                    (200, "drop"), (230, "drop"), (250, "outro")]:
+        assert kind_at(t) == want, (t, want, secs)
+    starts = lambda k: [t0 + s.start_bar * bar for s in secs if s.kind == k]
+    drops, builds = starts("drop"), starts("build")
+    assert len(drops) == 1 and abs(drops[0] - 199) < bar, drops
+    assert len(builds) == 2 and abs(builds[0] - 146) < 2 * bar and abs(builds[1] - 179) < 2 * bar, builds
+
+
+def test_fakeout_needs_a_short_drop_and_a_brighter_one():
+    """The fake-out rule must not touch ordinary drops: the 16-bar drops of Chicken Soup and the 12/16/20-bar
+    drops of Not Even Love and Love Sosa keep every drop."""
+    from jaylights.analysis.sections import label_sections
+
+    for name, n_drops in [("chicken_soup.txt", 2), ("not_even_love.txt", 3), ("love_sosa.txt", 2)]:
+        secs = label_sections(_load_bars(name))
+        assert sum(s.kind == "drop" for s in secs) == n_drops, (name, secs)
+
+
 def test_real_tracks_python_matches_js():
     import json
     import shutil
@@ -692,6 +728,23 @@ def test_real_love_sosa_live():
         assert _kind_at(secs, t) == "drop", (t, secs)
     for t in (2 * 60 + 40, 2 * 60 + 45, 2 * 60 + 49):  # the sub comes back in the 2nd build, no drop yet
         assert _kind_at(secs, t) == "build", (t, secs)
+
+
+def test_real_breathe_it_out_live():
+    t0, bar = 0.03, 1.6
+    secs = _live_secs("breathe_it_out.txt", t0, bar)
+    # the real drop 3:19 is called within a bar. Live can't see ahead, so it may call the 2:46 fake-out and
+    # the 3:12 build climax a drop, but only if it then drops back to build and calls 3:19 again.
+    _check_live(secs, bar, [199], [179], 14, extra_drops=(166, 192))
+    drops = [(a, b) for k, a, b, n in secs if k == "drop"]
+    for a, b in drops:
+        if abs(a - 199) > bar:  # a false-start drop must be cut by a build before the real one
+            assert any(k == "build" and a < x < 199 for k, x, y, n in secs), (a, secs)
+    # a sub that fades for 8 bars and comes back at the first groove's loudness (2:01) is the groove, not a drop;
+    # the same goes for 0:20 and 0:45 (kick-running melody part)
+    for t in (20, 45, 121, 125, 140):
+        assert _kind_at(secs, t) != "drop", (t, secs)
+    assert _kind_at(secs, 205) == "drop" and _kind_at(secs, 240) == "drop"
 
 
 def test_live_bar_features_and_sections_python_matches_js(tmp_path):

@@ -318,6 +318,29 @@
     }
     return runs;
   }
+  // thresholds learned from Seven Lions, Breathe It Out Slowly (see sections.py)
+  const FAKEOUT_MAX = 12, FAKEOUT_GAP = 16, FAKEOUT_BRIGHTER = 0.1, DEEP_DIP = 0.5, TOP_COLLAPSE = 0.2, RISER_SLOPE = 0.03, RISER_RISE = 0.25, LONG_INTRO = 20;
+  // 2-bar means (a convolve "valid" with [.5,.5])
+  const pairMeans = x => { const o = []; for (let i = 0; i + 1 < x.length; i++) o.push((x[i] + x[i + 1]) / 2); return o; };
+  // the sub really leaves (2 bars in a row DEEP_DIP under the loudest bars): a breakdown, not a groove dip
+  const deepDip = (low, p90) => pairMeans(low).some(v => v < p90 - DEEP_DIP);
+  // the top end falls away in the dip: a breakdown even with the kick running
+  const topCollapse = (t, grooveT) => { const g = meanOf(grooveT); return pairMeans(t).some(v => v < g - TOP_COLLAPSE); };
+  // a groove that ends in a climbing riser and then loses its sub has a build at the end of it
+  function riserBuilds(secs, M, tension) {
+    const out = secs.map(s => ({ ...s }));
+    for (let i = out.length - 1; i >= 0; i--) {
+      const s = out[i];
+      if (s.kind !== GROOVE || i + 1 >= out.length || out[i + 1].kind !== BREAKDOWN || s.end - s.start < 12) continue;
+      const t = tension.slice(s.start, s.end);
+      if (slope(t.slice(-8)) < RISER_SLOPE) continue;
+      const search = t.slice(0, -2), mn = Math.min(...search), floor = mn + 0.25 * (Math.max(...t) - mn);
+      let lastCalm = -1; search.forEach((v, j) => { if (v <= floor) lastCalm = j; });
+      const start = s.start + (lastCalm >= 0 ? lastCalm : 0) + 1;
+      if (s.end - start >= PHRASE && meanOf(t.slice(-4)) - floor >= RISER_RISE) { out.splice(i + 1, 0, { kind: BUILD, start, end: s.end }); s.end = start; }
+    }
+    return out;
+  }
   function labelSectionsRaw(M) {
     const low = M.low, n = low.length; if (!n) return [];
     const p90 = percentile(low, 90), p10 = percentile(low, 10), thr = p90 - p10 > 0.15 ? p90 - 0.15 : null;
@@ -367,6 +390,20 @@
         }
       }
     }
+    // melodic dubstep: a short "drop" that leads straight into a build, then a clearly brighter drop, was a
+    // fake-out (Breathe It Out Slowly 2:46): groove, and the bars up to the real drop are the build
+    const fakeEnd = {};
+    for (let i = 0; i < pieces.length; i++) {
+      if (kinds[i] !== DROP || pieces[i][1] - pieces[i][0] >= FAKEOUT_MAX) continue;
+      let j = -1; for (let k = i + 1; k < pieces.length; k++) if (kinds[k] === DROP) { j = k; break; }
+      if (j < 0) continue;
+      const a = pieces[i][0], b = pieces[i][1], c = pieces[j][0];
+      if (c - b <= FAKEOUT_GAP && pieces[j][1] - c >= 12 && mean(M.tension, c, pieces[j][1]) >= mean(M.tension, a, b) + FAKEOUT_BRIGHTER) {
+        kinds[i] = GROOVE;
+        if (i + 1 < j && !pieces[i + 1][2] && pieces[i + 1][1] - pieces[i + 1][0] <= 2) { pieces[i][1] = pieces[i + 1][1]; pieces[i + 1][0] = pieces[i + 1][1]; }
+        fakeEnd[j] = pieces[i][1];
+      }
+    }
     // a 1-2 bar hole between two alike drop halves (a vocal cut) is part of the drop. If the part
     // before it was still climbing (a snare roll, busier than what follows), that was the build
     // and the hole is the silence right before the real drop: leave it.
@@ -386,10 +423,14 @@
     }
     // a short bass dip that keeps the kick going and leads back into the groove is groove
     for (let i = 1; i < pieces.length - 1; i++) {
-      if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && pieces[i][1] - pieces[i][0] <= 8 && mean(M.kick, pieces[i][0], pieces[i][1]) >= 0.6) kinds[i] = GROOVE;
+      const da = pieces[i][0], db = pieces[i][1];
+      if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && db - da > 0 && db - da <= 8 && mean(M.kick, da, db) >= 0.6
+          && !deepDip(low.slice(da, db), p90)
+          && !(pieces[i - 1][2] && topCollapse(M.tension.slice(da, db), M.tension.slice(pieces[i - 1][0], pieces[i - 1][1])))) kinds[i] = GROOVE;
     }
     const out = [], last = () => out[out.length - 1];
     pieces.forEach(([a, b, f], i) => {
+      if (a >= b) return;
       const kind = kinds[i], nxt = i + 1 < kinds.length ? kinds[i + 1] : null;
       if (nxt !== DROP || kind === DROP) { out.push({ kind, start: a, end: b }); return; }
       let lo = a; if (out.length && last().kind !== DROP) lo = last().start;
@@ -403,6 +444,7 @@
       }
       if (blen > 0) blen = clamp(Math.ceil(blen / PHRASE) * PHRASE, PHRASE, 32);
       let start = Math.max(lo, b - blen);
+      if (fakeEnd[i + 1] !== undefined) start = Math.max(lo, Math.min(start, fakeEnd[i + 1]));  // after a fake-out, everything up to the real drop is the build
       // drops and grooves come in whole 8-bar phrases: a build that would leave the section
       // before it on a half phrase (e.g. 12 bars) really started 4 bars earlier, kick still going
       if (out.length && (last().kind === DROP || last().kind === GROOVE) && last().end >= start) {
@@ -427,10 +469,16 @@
       const nb = out[out.length - 1].end;
       for (const s of out.slice(lastDrop + 1)) if ((s.kind === GROOVE || s.kind === BREAKDOWN) && s.start >= 0.75 * nb) s.kind = OUTRO;
     }
+    if (out.length && out[0].kind === BREAKDOWN && out[0].end - out[0].start > LONG_INTRO) {
+      // the kick starts early and runs for 20+ bars with the sub well under the first groove: a breakdown after a short intro
+      const e = out[0].end; let s0 = null;
+      for (let b = 0; b < e; b++) if (M.kick[b] >= 1.0) { s0 = b; break; }
+      if (s0 !== null && s0 >= 2 && s0 <= 8 && mean(M.kick, s0, e) >= 1.0) { out[0].start = s0; out.unshift({ kind: INTRO, start: 0, end: s0 }); }
+    }
     if (out.length && (out[0].kind === GROOVE || out[0].kind === BREAKDOWN)) out[0].kind = INTRO;
     const merged = [];
     for (const s of out) { const m = merged[merged.length - 1]; if (m && m.kind === s.kind) m.end = s.end; else merged.push({ ...s }); }
-    const secs = brightDrops(merged, M), grid = phraseGrid(secs);
+    const secs = brightDrops(riserBuilds(merged, M, tension), M), grid = phraseGrid(secs);
     if (grid === null) return secs;
     return snapToGrid(hookBuilds(secs, hooks, power, grid), grid);
   }
@@ -656,12 +704,15 @@
       return hit;
     }
   }
+  const isOctave = (a, b, tol = 0.015) => Math.abs(a / b / 0.5 - 1) < tol || Math.abs(a / b / 2 - 1) < tol;
   const ratioRelated = (a, b, tol = 0.015) => [0.5, 2 / 3, 0.75, 4 / 3, 1.5, 2].some(q => Math.abs(a / b / q - 1) < tol);
 
   function median(a) { const s = Float64Array.from(a).sort(), n = s.length; return n % 2 ? s[(n - 1) >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2; }
 
   // ---------------------------------------------------------------- live section machine (twin of analysis/live_sections.py)
   const LS_FULL_WITHIN = 0.15, LS_EMPTY_BELOW = 0.42, LS_FLOOR = 0.35, LS_TENSION_UP = 0.10, LS_HOLD = 2, LS_STAGE2_HARD_CUT = 0.2;
+  // short dip back at groove loudness = groove; tension climbs inside a drop = build; a 3-bar "drop" cut again = false start; silence is no build
+  const LS_BACK_MIN = 4, LS_BACK_DIP = 8, LS_D_RELAX = 0.15, LS_D_CLIMB = 0.12, LS_FALSE_START = 3, LS_SILENT = 0.1;
   const meanOf = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
   class LiveSections {
     constructor() {
@@ -669,15 +720,16 @@
       this.lowRef = 0; this.pwRef = 0; this.gTe = null; this.gN = 0; this.gPw = null;
       this.emptyRun = 0; this.fullRun = 0; this.dipRun = 0; this.buildCut = 0; this.curCut = 0;
       this.dropRef = null; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; this.sinceDrop = 99; this.kTeMin = 9; this.stage2 = false;
+      this.falseStart = false; this.dTeMin = 9; this.back = false;
     }
     dips4() { let n = 0; for (const f of this.full.slice(-4)) if (!f) n++; return n; }
     teUp(te) { return this.gN >= 8 && this.gTe !== null && te >= this.gTe + LS_TENSION_UP; }
     enter(kind) {
       if (kind === this.kind) return;
-      this.kind = kind; this.stage2 = false;
+      this.kind = kind; this.stage2 = false; this.falseStart = false;
       if (kind === BREAKDOWN) this.kTeMin = Math.min(...this.rows.slice(-3).map(r => r.tension));
       if (kind === BUILD) this.buildCut = this.curCut;
-      if (kind === DROP) { this.dropRef = [0, 0, 0]; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; }
+      if (kind === DROP) { this.dropRef = [0, 0, 0]; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; this.dTeMin = 9; }
     }
     // feed the features of the bar that just ended; slam = the frame-level detector heard the sub slam in at its start
     push(row, slam = false) {
@@ -688,29 +740,33 @@
       this.pwRef = Math.max(Math.min(p, prevP), this.pwRef - 0.003);
       const full = low >= Math.max(this.lowRef - LS_FULL_WITHIN, LS_FLOOR);
       const empty = this.lowRef >= 0.5 && low < this.lowRef - LS_EMPTY_BELOW;
-      const erPrev = this.emptyRun, dips4 = this.dips4(), j = i - 1 - erPrev;
+      const erPrev = this.emptyRun, dipPrev = this.dipRun, dips4 = this.dips4(), j = i - 1 - erPrev;
       const buildLike = j >= 0 && (this.kinds[j] === BUILD || !this.full[j]), heavyBefore = j >= 0 && this.full[j];
       this.emptyRun = empty ? this.emptyRun + 1 : 0; this.curCut = this.emptyRun;
       this.fullRun = full ? this.fullRun + 1 : 0; this.dipRun = full ? 0 : this.dipRun + 1;
       if (this.kind === BUILD) this.buildCut = Math.max(this.buildCut, this.emptyRun);
       this.rows.push(row); this.power.push(p); this.full.push(full);
       const was = this.kind;
+      // a short dip that comes back at groove loudness is the groove again (Breathe It Out Slowly 2:01)
+      const back = dipPrev >= LS_BACK_MIN && dipPrev <= LS_BACK_DIP && full && this.gPw !== null && p < (this.gPw + this.pwRef) / 2;
       if (this.kind !== DROP && i >= 1) {
         const cut = erPrev >= 1 && (buildLike || erPrev >= 3);
         let hit = false;
-        if (cut && full && this.gTe !== null && te >= this.gTe - 0.1) hit = true;
-        else if (cut && low >= this.lowRef - 0.3 && kick >= 1.2 && p >= 0.82 * this.pwRef) hit = true;
+        if (!back && cut && full && this.gTe !== null && te >= this.gTe - 0.1) hit = true;
+        else if (!back && cut && low >= this.lowRef - 0.3 && kick >= 1.2 && p >= 0.82 * this.pwRef) hit = true;
         else if (erPrev >= 1 && erPrev <= 2 && buildLike && heavyBefore && kick >= 1.4 && this.gTe !== null && te >= this.gTe + 0.08) hit = true;
-        else if (this.kind === BUILD && this.buildCut >= 3 && full && !this.full[i - 1] && p >= 0.9 * this.pwRef) hit = true;
-        else if ((this.kind === BUILD || this.kind === BREAKDOWN) && this.run >= 2 && full && low >= prevLow + 0.15
+        else if (!back && this.kind === BUILD && this.buildCut >= 3 && full && !this.full[i - 1] && p >= 0.9 * this.pwRef) hit = true;
+        else if (this.kind === BUILD && this.falseStart && full && !this.full[i - 1] && p >= 0.9 * this.pwRef) hit = true;
+        else if (!back && (this.kind === BUILD || this.kind === BREAKDOWN) && this.run >= 2 && full && low >= prevLow + 0.15
                  && p >= meanOf(this.power.slice(-3, -1)) + 0.3) hit = true;
         else if (slam && (this.kind === BUILD || this.kind === BREAKDOWN || dips4 >= 2 || erPrev >= 1) && low >= this.lowRef - 0.3
                  && p >= 0.75 * this.pwRef) hit = true;
         if (hit) this.enter(DROP);
       }
+      this.back = back;
       this.kTeMin = Math.min(this.kTeMin, te);
       if ((this.kind === INTRO || this.kind === GROOVE) && this.gPw !== null && p >= this.gPw + 0.35) { this.gTe = null; this.gPw = null; this.gN = 0; }
-      if (this.kind === DROP) this.inDrop(row); else this.others();
+      if (this.kind === DROP) this.inDrop(row); else this.others(row);
       if (full && (this.kind === INTRO || this.kind === GROOVE)) {
         this.gTe = this.gTe === null ? te : 0.75 * this.gTe + 0.25 * te;
         this.gPw = this.gPw === null ? p : 0.75 * this.gPw + 0.25 * p;
@@ -732,17 +788,27 @@
       return false;
     }
     inDrop(row) {
+      // the pause on the 4th bar of a "drop" that only just began: the build's climax, not the drop (Breathe 3:12 to 3:18)
+      if (this.dropN === LS_FALSE_START && this.run === LS_FALSE_START && row.kick >= 1.2 && row.low < this.dropRef[0] / this.dropN - 0.2) {
+        this.enter(BUILD); this.falseStart = true; return;
+      }
       if (this.dropN < 4) { this.dropRef[0] += row.low; this.dropRef[1] += row.energy; this.dropRef[2] += row.tension; this.dropN++; }
       const n = this.dropN, dEn = this.dropRef[1] / n, dTe = this.dropRef[2] / n;
       const sag = row.energy <= dEn - 0.15;
       this.sagRun = sag && this.emptyRun === 0 ? this.sagRun + 1 : 0;
       const slack = row.tension <= dTe - 0.2 && this.emptyRun === 0;
       this.slackRun = slack ? this.slackRun + 1 : 0;
+      if (this.run >= 4 && this.emptyRun === 0) {
+        const te2 = meanOf(this.rows.slice(-2).map(r => r.tension));
+        this.dTeMin = Math.min(this.dTeMin, te2);
+        // kick-through build inside a long drop: the tension relaxed, then climbs again (Breathe 2:59 to 3:08)
+        if (this.run >= 8 && this.dTeMin <= dTe - LS_D_RELAX && te2 >= this.dTeMin + LS_D_CLIMB && this.kinds[this.kinds.length - 1] === DROP) { this.enter(BUILD); return; }
+      }
       if (!(this.kinds.length && this.kinds[this.kinds.length - 1] === DROP && this.run >= LS_HOLD)) return;
       if (this.emptyRun >= 3) this.enter(this.teUp(meanOf(this.rows.slice(-3).map(r => r.tension))) ? BUILD : BREAKDOWN);
       else if (this.sagRun >= 2 || this.slackRun >= 2) this.enter(GROOVE);
     }
-    others() {
+    others(row) {
       if (this.run < LS_HOLD && this.kind !== INTRO) return;
       const k = this.kind, settling = this.sinceDrop < 8;
       if (k === INTRO) { if (this.fullRun >= 3) this.enter(GROOVE); }
@@ -756,11 +822,12 @@
                  && tes2 >= meanOf(this.rows.slice(-8, -4).map(r => r.tension)) + 0.1) this.enter(BUILD);
       } else if (k === BREAKDOWN) {
         const tes2 = meanOf(this.rows.slice(-2).map(r => r.tension));
-        if (this.teUp(tes2) || tes2 >= this.kTeMin + 0.2) this.enter(BUILD);
+        if ((this.teUp(tes2) || tes2 >= this.kTeMin + 0.2) && row.energy >= LS_SILENT) this.enter(BUILD);
         else if (this.fullRun >= 3) this.enter(GROOVE);
       } else if (k === BUILD) {
         const te4 = meanOf(this.rows.slice(-4).map(r => r.tension)), quiet = this.gTe !== null && te4 < this.gTe + 0.06;
         if ((this.run >= 16 && this.fullRun >= 8) || (this.run >= 8 && this.fullRun >= 8 && quiet)) this.enter(GROOVE);
+        else if (this.back && !this.falseStart) this.enter(GROOVE);
       }
     }
   }
@@ -905,7 +972,9 @@
       if (this.locked && (!(this.kickRunning() || this.full) || this.freeze)) return;
       const cand = estimateTempo(env, this.fr, this.range, this.everLocked ? this.bpm : 128);
       if (!this.everLocked) this.bpm = cand;
-      else if (Math.abs(cand / this.bpm - 1) >= 0.03 && (this.section === DROP || this.frame < 45 * this.fr || !ratioRelated(cand, this.bpm))) {
+      else if (Math.abs(cand / this.bpm - 1) >= 0.03 && (!ratioRelated(cand, this.bpm)
+               || (isOctave(cand, this.bpm) && (this.section === DROP || this.frame < 45 * this.fr)) || (this.section === DROP && this.full))) {
+        // octave jumps: early on or in a drop. 2:3 / 3:4 jumps (a melody slipping 150 to 100, Breathe It Out Slowly): only in a drop with the sub in
         if (this.pendingBpm && Math.abs(cand / this.pendingBpm - 1) < 0.03) this.bpmVotes++; else { this.pendingBpm = cand; this.bpmVotes = 1; }
         if (this.bpmVotes >= 15) { this.bpm = cand; this.bpmVotes = 0; }
       } else this.bpmVotes = 0;

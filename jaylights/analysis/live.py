@@ -88,6 +88,12 @@ def _ratio_related(a: float, b: float, tol: float = 0.015) -> bool:
     return any(abs(r / q - 1) < tol for q in (0.5, 2 / 3, 0.75, 4 / 3, 1.5, 2.0))
 
 
+def _octave(a: float, b: float, tol: float = 0.015) -> bool:
+    """Exactly half or double the tempo."""
+    r = a / b
+    return abs(r / 0.5 - 1) < tol or abs(r / 2.0 - 1) < tol
+
+
 class BarFeatures:
     """The six per-bar features of sections.bar_features(), but computed causally.
 
@@ -355,9 +361,13 @@ class LiveAnalyzer:
         if not self._ever_locked:
             self.bpm = cand
         elif abs(cand / self.bpm - 1) >= 0.03 and (
-                self.section == DROP or self.frame < 45 * self.fr or not _ratio_related(cand, self.bpm)):
-            # ratio jumps (x3/4, x2/3...) are only trusted early on, or in a drop (full
-            # drums = best evidence); otherwise they're the tracker getting fooled
+                not _ratio_related(cand, self.bpm)
+                or (_octave(cand, self.bpm) and (self.section == DROP or self.frame < 45 * self.fr))
+                or (self.section == DROP and self._full)):
+            # octave jumps (x2, x1/2) are only trusted early on, or in a drop (full drums = best
+            # evidence); otherwise they're the tracker getting fooled. 2:3 / 3:4 jumps are never a free
+            # pass in the first 45 s: they need a drop with the sub in (melodic dubstep at 150 slipped to
+            # 100 in its kick-running melody part, Breathe It Out Slowly 0:33 and 2:20)
             # a different tempo has to win for ~3 s straight before we believe it
             if self._pending_bpm and abs(cand / self._pending_bpm - 1) < 0.03:
                 self._bpm_votes += 1

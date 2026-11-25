@@ -28,6 +28,12 @@ EMPTY_BELOW = 0.42      # empty = sub this far under the running top (the cut)
 FLOOR = 0.35            # ...and never "full" below this, whatever the running top says
 TENSION_UP = 0.10       # tension this far over the groove's = a build is climbing
 STAGE2_HARD_CUT = 0.2   # a 1-bar cut this deep is already the 2nd build stage (Love Sosa), a shallower one is the pause
+BACK_MIN = 4            # ...but a dip of 1-3 bars is the pause before a drop, not a fade
+BACK_DIP = 8            # a dip this short (bars) that returns at groove loudness is the groove again, not a drop
+D_RELAX = 0.15          # ...after it had relaxed this far under the drop's own tension
+D_CLIMB = 0.12          # inside a drop, tension this far over its own low point (after it relaxed) = a build
+FALSE_START = 3         # a "drop" that cuts its sub again after this many bars was the build's climax, not the drop
+SILENT = 0.1            # a bar quieter than this is the silence after the track, not a build
 HOLD = 2                # bars a section holds before it may change (entering DROP is exempt)
 
 
@@ -59,6 +65,9 @@ class LiveSections:
         self.slack_run = 0
         self.since_drop = 99         # bars since the last drop ended
         self.k_te_min = 9.0          # lowest tension since the breakdown began
+        self._back = False
+        self.false_start = False     # the last "drop" was cut after 3 bars: this build is about to drop for real
+        self.d_te_min = 9.0          # lowest 2-bar tension inside the current drop (after its first 4 bars)
         self.stage2 = False          # this build has reached its 2nd, more intense stage (never changes a label)
 
     # ------------------------------------------------------------------ helpers
@@ -73,6 +82,7 @@ class LiveSections:
         if kind != self.kind:
             self.kind = kind
             self.stage2 = False
+            self.false_start = False
             if kind == BREAKDOWN:
                 self.k_te_min = min(r["tension"] for r in self.rows[-3:])   # the bars that sent us here count
             if kind == BUILD:
@@ -80,6 +90,7 @@ class LiveSections:
             if kind == DROP:
                 self.drop_ref, self.drop_n = [0.0, 0.0, 0.0], 0
                 self.sag_run = self.slack_run = 0
+                self.d_te_min = 9.0
 
     def push(self, row: dict, slam: bool = False) -> str:
         """Feed the features of the bar that just ended. Returns the section it belongs to.
@@ -100,6 +111,7 @@ class LiveSections:
 
         # the cut that came before this bar: how long, and what the bar before it was like
         er_prev = self.empty_run
+        dip_prev = self.dip_run
         dips4 = self.dips4()
         j = i - 1 - er_prev
         build_like = j >= 0 and (self.kinds[j] == BUILD or not self.full[j])
@@ -115,25 +127,31 @@ class LiveSections:
         self.power.append(p)
         self.full.append(full)
         was = self.kind
+        # a short dip that comes back at groove loudness (closer to the groove than to the biggest bars so
+        # far) is the groove again, even right after a build-like fade (Breathe It Out Slowly 2:01, the sub
+        # returns after an 8-bar fade at the first groove's loudness). Offline twin: the "short dip" rule.
+        back = (BACK_MIN <= dip_prev <= BACK_DIP and full and self.g_pw is not None and p < (self.g_pw + self.pw_ref) / 2)
 
         # ---- DROP: instant, from anything but a drop ----
         if self.kind != DROP and i >= 1:
             cut = er_prev >= 1 and (build_like or er_prev >= 3)
             hit = False
-            if cut and full and self.g_te is not None and te >= self.g_te - 0.1:
+            if not back and cut and full and self.g_te is not None and te >= self.g_te - 0.1:
                 hit = True       # the sub is back at full after a real cut (Not Even Love 1:15, 2:29).
                 #                  The soft "boom" bar after a gap has the tension dropped away (Chicken Soup 1:33)
-            elif cut and low >= self.low_ref - 0.3 and kick >= 1.2 and p >= 0.82 * self.pw_ref:
+            elif not back and cut and low >= self.low_ref - 0.3 and kick >= 1.2 and p >= 0.82 * self.pw_ref:
                 hit = True       # kick slams back, sub still swelling in (Love Sosa 1:01); a quieter
                 #                  comeback is the 2nd build stage, not the drop (Love Sosa 2:37)
             elif (1 <= er_prev <= 2 and build_like and heavy_before and kick >= 1.4
                   and self.g_te is not None and te >= self.g_te + 0.08):
                 hit = True       # bright drop: kick pinned right after the pause, sub still out
                 #                  (Chicken Soup 0:43). A drop can open on a sub-less bar
-            elif (self.kind == BUILD and self.build_cut >= 3 and full and not self.full[i - 1]
+            elif (not back and self.kind == BUILD and self.build_cut >= 3 and full and not self.full[i - 1]
                   and p >= 0.9 * self.pw_ref):
                 hit = True       # build with a real cut in it, then the sub is full again (Love Sosa 2:51)
-            elif (self.kind in (BUILD, BREAKDOWN) and self.run >= 2 and full and low >= prev_low + 0.15
+            elif self.kind == BUILD and self.false_start and full and not self.full[i - 1] and p >= 0.9 * self.pw_ref:
+                hit = True       # the pause after a false start, then the sub slams back: now it is the drop (Breathe 3:19)
+            elif (not back and self.kind in (BUILD, BREAKDOWN) and self.run >= 2 and full and low >= prev_low + 0.15
                   and p >= _mean(self.power[-3:-1]) + 0.3):
                 hit = True       # an established build / breakdown, then the sub and the whole mix jump up together
                 #                  (a bar-old build that returns at groove loudness is not a drop: Chicken Soup 0:36)
@@ -142,6 +160,7 @@ class LiveSections:
                 hit = True       # the sub slammed back in after dipping bars, as loud as the track gets
             if hit:
                 self._enter(DROP)
+        self._back = back
 
         self.k_te_min = min(self.k_te_min, te)
         if self.kind in (INTRO, GROOVE) and self.g_pw is not None and p >= self.g_pw + 0.35:
@@ -178,6 +197,14 @@ class LiveSections:
 
     # ------------------------------------------------------------------ inside a drop
     def _in_drop(self, row, full):
+        # the pause on the last bar of a phrase, 3 bars into a "drop": the sub ducks out well under where
+        # this drop's own sub was, and it is a drop that only just began (Breathe 3:12 to 3:18 is the
+        # build's climax, the sub cuts again on the 4th bar and the real drop lands at 3:19)
+        if (self.drop_n == FALSE_START and self.run == FALSE_START and row["kick"] >= 1.2
+                and row["low"] < self.drop_ref[0] / self.drop_n - 0.2):
+            self._enter(BUILD)
+            self.false_start = True
+            return
         if self.drop_n < 4:
             self.drop_ref[0] += row["low"]
             self.drop_ref[1] += row["energy"]
@@ -191,6 +218,15 @@ class LiveSections:
         # the top end falling away (tension collapses to the groove's) ends the drop (Chicken Soup 1:11)
         slack = row["tension"] <= d_te - 0.2 and self.empty_run == 0
         self.slack_run = self.slack_run + 1 if slack else 0
+        if self.run >= 4 and self.empty_run == 0:
+            te2 = _mean([r["tension"] for r in self.rows[-2:]])
+            self.d_te_min = min(self.d_te_min, te2)
+            # kick-through build inside a long drop: the tension relaxed, then climbs again
+            # (Breathe 2:59 to 3:08, the build after the fake-out drop)
+            if (self.run >= 8 and self.d_te_min <= d_te - D_RELAX and te2 >= self.d_te_min + D_CLIMB
+                    and self.kinds[-1] == DROP):
+                self._enter(BUILD)
+                return
         if not (self.kinds and self.kinds[-1] == DROP and self.run >= HOLD):
             return
         if self.empty_run >= 3:
@@ -229,8 +265,8 @@ class LiveSections:
                 self._enter(BUILD)           # kick-through build: the sub never leaves, the tension just climbs
         elif k == BREAKDOWN:
             tes2 = _mean([r["tension"] for r in self.rows[-2:]])
-            if self._te_up(tes2) or tes2 >= self.k_te_min + 0.2:
-                self._enter(BUILD)           # the tension climbs back out of the breakdown
+            if (self._te_up(tes2) or tes2 >= self.k_te_min + 0.2) and row["energy"] >= SILENT:
+                self._enter(BUILD)           # the tension climbs back out of the breakdown (not out of the silence after the end)
             elif self.full_run >= 3:
                 self._enter(GROOVE)
         elif k == BUILD:
@@ -238,6 +274,8 @@ class LiveSections:
             quiet = self.g_te is not None and te4 < self.g_te + 0.06
             if self.run >= 16 and self.full_run >= 8 or (self.run >= 8 and self.full_run >= 8 and quiet):
                 self._enter(GROOVE)          # a build that never dropped
+            elif self._back and not self.false_start:
+                self._enter(GROOVE)          # the sub came back after a short fade at groove loudness
 
 
 def simulate_live_bars(m: dict) -> list[Section]:

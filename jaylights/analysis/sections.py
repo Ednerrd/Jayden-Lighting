@@ -20,6 +20,14 @@ from ..state import BREAKDOWN, BUILD, DROP, GROOVE, INTRO, OUTRO
 from .features import robust_norm
 
 PHRASE = 4  # bars
+FAKEOUT_MAX = 12        # a "drop" shorter than this (bars) can be a fake-out
+FAKEOUT_GAP = 16        # ...if the real drop comes within this many bars after it
+FAKEOUT_BRIGHTER = 0.1  # ...and is this much brighter (tension)
+DEEP_DIP = 0.5          # a sub dip this far under the loudest bars is a breakdown, not a groove dip
+TOP_COLLAPSE = 0.2      # a dip whose tension falls this far under the groove's is a breakdown
+RISER_SLOPE = 0.03      # a groove's last 8 bars climb at least this fast (tension + density/2 per bar)...
+RISER_RISE = 0.25       # ...and end this far over their calm level: that's a build into the break
+LONG_INTRO = 20         # an intro with the kick running for more than this many bars is a breakdown
 
 
 @dataclass
@@ -116,6 +124,42 @@ def _split_threshold(x: np.ndarray, min_gap: float = 0.15):
     if len(lo) == 0 or len(hi) == 0 or hi.mean() - lo.mean() < min_gap:
         return None
     return thr
+
+
+def _deep_dip(low: np.ndarray, p90: float) -> bool:
+    """The sub really leaves (two bars in a row at least DEEP_DIP under the loudest bars), as opposed to a
+    groove dip that only thins it. Not Even Love 1:45 bottoms out at 0.55 under a 0.86 top (a groove
+    dip); Breathe It Out Slowly 1:49 fades to 0.28 under a 0.97 top (a breakdown)."""
+    return len(low) >= 2 and bool((np.convolve(low, [0.5, 0.5], "valid") < p90 - DEEP_DIP).any())
+
+
+def _top_collapse(t: np.ndarray, groove_t: np.ndarray) -> bool:
+    """The top end falls away in the dip (two bars in a row TOP_COLLAPSE under the groove before it): a
+    breakdown even with the kick running (Breathe It Out Slowly 2:40). A groove dip keeps its tension
+    (Not Even Love 1:45: 0.43 vs 0.45)."""
+    return len(t) >= 2 and bool((np.convolve(t, [0.5, 0.5], "valid") < groove_t.mean() - TOP_COLLAPSE).any())
+
+
+def _riser_builds(secs: list[Section], m: dict[str, np.ndarray], tension: np.ndarray) -> list[Section]:
+    """A groove that ends in a climbing riser (tension and hi-hat density rising, kick and sub still in)
+    and then loses its sub has a build at the end of it, even when what follows isn't a drop
+    (Breathe It Out Slowly 2:26 to 2:40: the build runs into a short breakdown, then the fake-out)."""
+    out = [Section(s.kind, s.start_bar, s.end_bar) for s in secs]
+    for i in range(len(out) - 1, -1, -1):
+        s = out[i]
+        if s.kind != GROOVE or i + 1 >= len(out) or out[i + 1].kind != BREAKDOWN or s.end_bar - s.start_bar < 12:
+            continue
+        t = tension[s.start_bar:s.end_bar]
+        if _slope(t[-8:]) < RISER_SLOPE:
+            continue
+        search = t[:-2]
+        floor = search.min() + 0.25 * (t.max() - search.min())
+        calm = np.flatnonzero(search <= floor)
+        start = s.start_bar + (int(calm[-1]) if len(calm) else 0) + 1
+        if s.end_bar - start >= PHRASE and t[-4:].mean() - floor >= RISER_RISE:
+            out.insert(i + 1, Section(BUILD, start, s.end_bar))
+            s.end_bar = start
+    return out
 
 
 def _runs(flags: np.ndarray, min_len: int = 2) -> list[list]:
@@ -229,6 +273,27 @@ def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
                     and power[a:b].mean() <= ref_pw and m["density"][a:b].mean() >= ref_d + 0.25):
                 kinds[i] = GROOVE
                 hooks.append((a, b))
+    # melodic dubstep: a short "drop" that leads straight into a build, and then a drop that is clearly
+    # brighter, was a fake-out (Seven Lions, Breathe It Out Slowly 2:46 to 2:59: the loudest thing so far,
+    # right after a build, 8 bars long, then build 2 and the real drop at 3:19). It is groove, and the
+    # bars after it up to the real drop are the build. Real drops run 16+ bars (Chicken Soup's are
+    # exactly 16), so only a drop under FAKEOUT_MAX bars can be one.
+    fake_end: dict[int, int] = {}   # real-drop piece index -> bar where its build starts
+    for i in range(len(pieces)):
+        if kinds[i] != DROP or pieces[i][1] - pieces[i][0] >= FAKEOUT_MAX:
+            continue
+        j = next((k for k in range(i + 1, len(pieces)) if kinds[k] == DROP), None)
+        if j is None:
+            continue
+        a, b = pieces[i][0], pieces[i][1]
+        c = pieces[j][0]
+        if (c - b <= FAKEOUT_GAP and pieces[j][1] - c >= 12
+                and m["tension"][c:pieces[j][1]].mean() >= m["tension"][a:b].mean() + FAKEOUT_BRIGHTER):
+            kinds[i] = GROOVE
+            if i + 1 < j and not pieces[i + 1][2] and pieces[i + 1][1] - pieces[i + 1][0] <= 2:
+                pieces[i][1] = pieces[i + 1][1]   # the 1-bar gap after it belongs to the groove
+                pieces[i + 1][0] = pieces[i + 1][1]
+            fake_end[j] = pieces[i][1]
     # a 1-2 bar hole between two alike drop halves (a vocal cut) is part of the drop. If the
     # part before it was still climbing (a snare roll, busier than what follows), that was
     # the build and the hole is the silence right before the real drop: leave it.
@@ -249,11 +314,15 @@ def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
     # a short bass dip that keeps the kick going and leads back into the groove is groove
     for i in range(len(pieces) - 1):
         a, b = pieces[i][0], pieces[i][1]
-        if kinds[i] == BREAKDOWN and kinds[i + 1] == GROOVE and i > 0 and b - a <= 8 and m["kick"][a:b].mean() >= 0.6:
+        if (kinds[i] == BREAKDOWN and kinds[i + 1] == GROOVE and i > 0 and 0 < b - a <= 8 and m["kick"][a:b].mean() >= 0.6
+                and not _deep_dip(low[a:b], p90)
+                and not (pieces[i - 1][2] and _top_collapse(m["tension"][a:b], m["tension"][pieces[i - 1][0]:pieces[i - 1][1]]))):
             kinds[i] = GROOVE
 
     out: list[Section] = []
     for i, ((a, b, f, _), kind) in enumerate(zip(pieces, kinds)):
+        if a >= b:
+            continue
         nxt = kinds[i + 1] if i + 1 < len(kinds) else None
         if nxt != DROP or kind == DROP:
             out.append(Section(kind, a, b))
@@ -282,6 +351,8 @@ def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             # build really started 3 bars earlier, with the kick still going.
             blen = int(np.clip(np.ceil(blen / PHRASE) * PHRASE, PHRASE, 32))
         start = max(lo, b - blen)
+        if i + 1 in fake_end:
+            start = max(lo, min(start, fake_end[i + 1]))   # after a fake-out, everything up to the real drop is the build
         # drops and grooves come in whole 8-bar phrases. If this build would leave the
         # section before it on a half phrase (say 12 bars), the build really started 4 bars
         # earlier, with the kick still going (it sounds the same, only the phrase tells)
@@ -320,6 +391,16 @@ def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
         for s in out[last_drop + 1:]:
             if s.kind in (GROOVE, BREAKDOWN) and s.start_bar >= 0.75 * n_bars:
                 s.kind = OUTRO
+    if out and out[0].kind == BREAKDOWN and out[0].end_bar - out[0].start_bar > LONG_INTRO:
+        # an intro is a few bars of set-up. If the kick starts early and then runs for 20+ bars with the
+        # sub well under the first groove, the melody/vocal part is a breakdown (Seven Lions, Breathe It
+        # Out Slowly 0:06 to 0:56). Intros that are silent or sub-less and short stay intros.
+        e = out[0].end_bar
+        run = np.flatnonzero(m["kick"][:e] >= 1.0)
+        s0 = int(run[0]) if len(run) else None
+        if s0 is not None and 2 <= s0 <= 8 and m["kick"][s0:e].mean() >= 1.0:
+            out[0].start_bar = s0
+            out.insert(0, Section(INTRO, 0, s0))
     if out and out[0].kind in (GROOVE, BREAKDOWN):
         out[0].kind = INTRO
 
@@ -329,6 +410,7 @@ def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             merged[-1].end_bar = s.end_bar
         else:
             merged.append(s)
+    merged = _riser_builds(merged, m, tension)
     secs = _bright_drops(merged, m)
     grid = _phrase_grid(secs)
     if grid is None:

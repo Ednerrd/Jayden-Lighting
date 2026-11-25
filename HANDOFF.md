@@ -27,7 +27,7 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 | `web/engine.js` | **JS port of all of the above.** It must stay identical to the Python; `tools/eval_analysis.py` checks this. |
 | `web/index.html` | Test page (Front 3D view, Side view, lanes, Copy analysis) |
 | `tools/stress_synth.py`, `tools/eval_analysis.py` | 24-track realistic synthetic suite and harness. Run `python tools/eval_analysis.py --ranges auto --jobs 4` (about 4 minutes; `--no-live` is faster). |
-| `tests/` | pytest suite (91 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
+| `tests/` | pytest suite (94 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
 
 ## Section rules (sections.py) that came from real tracks
 - A bar is **full** if its sub level (kick band, 35–120 Hz) is above p90 − 0.15. The kick detector alone gets fooled by 808s, wobble bass and limiting.
@@ -43,13 +43,21 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - **Phrase grid snap:** when every drop starts on the same bar mod 4, any other boundary 1 bar off that grid snaps onto it (`_phrase_grid`, `_snap_to_grid`). All of Edward's timestamps sit on that grid.
 - Real tracks are checked Python against JS by `tools/real_tracks_js.js` (in a test).
 
+## Breathe It Out Slowly (Seven Lions & Fiora), what it taught
+- Fake-out: a "drop" under 12 bars, leading within 16 bars into a 12+ bar drop at least 0.1 brighter (tension), is groove, and the bars up to the real drop are the build (2:46 fake, 3:19 real).
+- A short dip where the sub really leaves (2-bar mean 0.5+ under p90) or the top end collapses is a breakdown, not a groove dip (1:49).
+- `_riser_builds`: a groove ending in a climbing riser, then losing its sub, gets a build over the riser (2:26).
+- A first section longer than 20 bars with the kick running (starting by bar 2-8) = short intro + breakdown (0:06 to 0:56).
+- Live: after a 4-8 bar dip, groove loudness = groove (no drop at 2:01); "false start" drop cut back to build on its 4th bar (3:12 → 3:18); a build inside a long drop (relax, then climb); no builds in silence. Live tempo: 2:3 / 3:4 ratio jumps now need a DROP with the sub full (the user's phone showed 150 → 100 slips); not reproducible without the audio.
+- Known live misses: 0:06 breakdown (called groove), build 1 at 2:26, a drop flash at 3:12 that's cut 4 bars later.
+
 ## Scores (stress suite, auto range)
-- **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 71%.
-- **Live (Python):** tempo 100%, beat F 0.92, downbeat 0.58, drop recall 78%, 0.25 false drops per track, build recall 84%, 0.21 false builds per track (was 71% / 0.42 / 1.62 before LiveSections).
+- **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.12 false drops per track, build recall 73%.
+- **Live (Python):** tempo 100%, beat F 0.92, downbeat 0.58, drop recall 78%, 0.25 false drops per track, build recall 84%, 0.12 false builds per track (was 71% / 0.42 / 1.62 before LiveSections).
 - **Live on real tracks (bar sim):** all 6 heard drops called within a bar, no false drops, 8-9 sections per track. Builds come late (live can't see ahead). Known miss: Not Even Love's 3rd drop (3:14), its sub only dips to 0.45 vs the 0.46 cut.
 
 ## ▶ NEXT TASK
-Edward picked "all, 1 → 2 → 3". **1 and 2 are DONE** (see the notes under each). **Next up: 3, more real tracks.** Ask Edward to run each track in Live mode before hitting Copy analysis, so the paste carries the new `live_*` trace too.
+Edward picked "all, 1 → 2 → 3". **1 and 2 are DONE** (see the notes under each). **3 is in progress:** Breathe It Out Slowly (Seven Lions, melodic dubstep, fake-out drop) is DONE offline. Keep asking for more real tracks. Ask Edward to run each track in Live mode before hitting Copy analysis, so the paste carries the new `live_*` trace too.
 
 ### 1. Live mode on real tracks: DONE
 The causal `LiveSections` bar machine (`live_sections.py`) now decides the live sections, and `simulate_live_bars` replays pastes through it. All 6 heard drops on the 3 real tracks are called within a bar. Copy analysis dumps `live_*` lines. Known miss: Not Even Love's 3rd drop (3:14). Builds come late in live (no lookahead). Old notes below for context.
