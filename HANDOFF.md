@@ -63,6 +63,21 @@ The web page's Strobes toggle only dims strobe fixtures at draw time. Pars can s
 - **Live on real tracks (bar sim):** all 6 heard drops called within a bar, no false drops, 8-9 sections per track. Builds come late (live can't see ahead). Known miss: Not Even Love's 3rd drop (3:14), its sub only dips to 0.45 vs the 0.46 cut.
 
 ## ▶ NEXT TASK
+
+**Palm of My Hands (Odd Mob Remix) is waiting:** paste in `tests/real_tracks/palm_of_my_hands.txt`,
+132 BPM, bar 1.818 s. Edward's ear timestamps are still needed, so ask for them first.
+Opus's read of the numbers:
+- Opening groove from 0:00. 2-beat mutes at 0:02.8 and 0:31.9.
+- Sub fades out from 0:40 into drop 1 at 1:01.9.
+- Breakdown 2:14.7, build ~2:29, drop 2 at 2:43.7, then on to the end at 3:20.
+
+Suspected bugs:
+1. **Offline:** each 2-beat mute becomes a fake build→drop (0:00→0:03 and 0:31→0:32).
+   A build needs more than a 1-bar mute.
+2. **Offline:** calls the opening groove a drop. Ask Edward.
+3. **Live:** drop 2 fires at 2:45, about 1.3 s late, while drop 1 is on time.
+   Live also calls the 2nd breakdown at 2:21 instead of ~2:14, and has no build before drop 2.
+
 Edward picked "all, 1 → 2 → 3". **1 and 2 are DONE** (see the notes under each). **3 is in progress:** Breathe It Out Slowly (Seven Lions, melodic dubstep, fake-out drop) is DONE offline. Keep asking for more real tracks. Ask Edward to run each track in Live mode before hitting Copy analysis, so the paste carries the new `live_*` trace too.
 
 ### 1. Live mode on real tracks: DONE
