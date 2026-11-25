@@ -31,7 +31,8 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - A bar is **full** if its sub level (kick band, 35–120 Hz) is above p90 − 0.15. The kick detector alone gets fooled by 808s, wobble bass and limiting.
 - A full run right after an empty run is a **drop**, and the whole run stays a drop.
 - A **short dip of 8 bars or less right before a drop is the build**, even when its last bar is a silent gap. This came from "Not Even Love", build 1:08 to 1:15.
-- **Drops come in whole 8-bar phrases.** If a build would leave the previous drop at 12 bars, 20 bars and so on, the build starts 4 bars earlier, with the kick still going. This came from "Not Even Love", build 2:14 to 2:29.
+- **Drops and grooves come in whole 8-bar phrases.** If a build would leave the previous drop or groove at 12 bars, 20 bars and so on, the build starts 4 bars earlier, with the kick still going. This came from "Not Even Love", build 2:15 to 2:29.
+- **After a short dip (8 bars or less), a section at groove loudness is the groove again, not a drop.** Its loudness has to sit closer to the first groove than to the biggest drop. A short dip that keeps the kick going and leads back into the groove counts as groove too. After a long breakdown (16+ bars), the next full section is still a drop. This came from "Not Even Love", groove 1:45 to 2:15.
 
 ## Scores (stress suite, auto range)
 - **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 69%.
@@ -40,7 +41,8 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 ## Open items / next ideas
 1. Drops land about 1 s after where Edward hears them on "Not Even Love" (1:16 vs 1:15). Check the beat-grid and downbeat offset on real tracks.
 2. Live downbeat is only 0.55. Live builds produce about 1.6 false builds per track.
-3. Keep collecting real tracks: Edward pastes Copy analysis, you add it to `tests/real_tracks/` with the timestamps Edward heard, then fix and add a test.
+3. When you next rebuild/republish the test page (`web/index.html`), remove the audience (the crowd silhouettes in the Crowd view, near "silhouettes of the crowd"). Edward asked for this; don't do it before then.
+3b. Keep collecting real tracks: Edward pastes Copy analysis, you add it to `tests/real_tracks/` with the timestamps Edward heard, then fix and add a test.
 4. Get Edward's actual fixtures and dongle, write exact profiles, then run `test-rig`.
 5. Ideas: Rekordbox/Serato sync, sACN, pixel bars, haze, user-saved looks.
 
