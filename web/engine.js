@@ -337,11 +337,21 @@
       for (let i = 0; i < cuts.length - 1; i++) pieces.push([cuts[i], cuts[i + 1], f, i > 0]);
     }
     const fp = pieces.filter(p => p[2]).map(p => mean(power, p[0], p[1])), top = fp.length ? Math.max(...fp) : 1;
+    let groovePower = null;  // loudness of the first groove, once we've heard one
     const kinds = pieces.map(([a, b, f, jumped], i) => {
       if (!f) return BREAKDOWN;
       const afterGap = i > 0 && (!pieces[i - 1][2] || jumped), margin = i === 1 ? 0.08 : 0.2;
-      return afterGap && mean(power, a, b) >= top - margin ? DROP : GROOVE;
+      const pw = mean(power, a, b);
+      let isDrop = afterGap && pw >= top - margin;
+      // back at groove level (closer to the groove than the biggest drop) = groove again
+      if (isDrop && groovePower !== null && pw < (groovePower + top) / 2) isDrop = false;
+      if (!isDrop && groovePower === null) groovePower = pw;
+      return isDrop ? DROP : GROOVE;
     });
+    // a bass dip that keeps the kick going and leads back into the groove is still groove
+    for (let i = 1; i < pieces.length - 1; i++) {
+      if (kinds[i] === BREAKDOWN && kinds[i + 1] === GROOVE && mean(M.kick, pieces[i][0], pieces[i][1]) >= 0.6) kinds[i] = GROOVE;
+    }
     const out = [], last = () => out[out.length - 1];
     pieces.forEach(([a, b, f], i) => {
       const kind = kinds[i], nxt = i + 1 < kinds.length ? kinds[i + 1] : null;
@@ -357,9 +367,9 @@
       }
       if (blen > 0) blen = clamp(Math.ceil(blen / PHRASE) * PHRASE, PHRASE, 32);
       let start = Math.max(lo, b - blen);
-      // drops come in whole 8-bar phrases: a build that would leave the drop before it on a
-      // half phrase (e.g. 12 bars) really started 4 bars earlier, kick still going
-      if (out.length && last().kind === DROP && last().end >= start) {
+      // drops and grooves come in whole 8-bar phrases: a build that would leave the section
+      // before it on a half phrase (e.g. 12 bars) really started 4 bars earlier, kick still going
+      if (out.length && (last().kind === DROP || last().kind === GROOVE) && last().end >= start) {
         const dlen = start - last().start;
         if (dlen >= 12 && dlen % 8 === 4) { start -= 4; last().end = start; }
       }

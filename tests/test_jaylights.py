@@ -330,8 +330,13 @@ def test_real_not_even_love_builds():
     secs = label_sections(_load_bars("not_even_love.txt"))
     builds = [t0 + s.start_bar * bar for s in secs if s.kind == "build"]
     drops = [t0 + s.start_bar * bar for s in secs if s.kind == "drop"]
-    # user: build 1:08 -> drop 1:15 ; build 2:14 -> drop 2:29
+    # user: build 1:08 -> drop 1:15 ; build 2:15 -> drop 2:29
     assert any(abs(b - 68) < 2 for b in builds), builds
     assert any(abs(b - 134) < 2 for b in builds), builds
     assert any(abs(d - 75) < 2 for d in drops), drops
     assert any(abs(d - 149) < 2 for d in drops), drops
+    # user: 1:45 -> 2:15 is the groove (bass dips, kick keeps going), not a drop/breakdown
+    for s in secs:
+        a, b = t0 + s.start_bar * bar, t0 + s.end_bar * bar
+        if a < 133 and b > 107:  # overlaps 1:47 - 2:13
+            assert s.kind == "groove", (s, round(a), round(b))

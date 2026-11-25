@@ -190,6 +190,7 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
     full_power = [power[a:b].mean() for a, b, f, _ in pieces if f]
     top = max(full_power) if full_power else 1.0
     kinds = []
+    groove_power = None  # loudness of the first groove, once we've heard one
     for i, (a, b, f, jumped) in enumerate(pieces):
         if not f:
             kinds.append(BREAKDOWN)
@@ -198,7 +199,20 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
         # right after the intro, a full section is usually the groove; it only counts as
         # a drop if it's as big as the biggest part of the track
         margin = 0.08 if i == 1 else 0.2
-        kinds.append(DROP if after_gap and power[a:b].mean() >= top - margin else GROOVE)
+        pw = power[a:b].mean()
+        is_drop = after_gap and pw >= top - margin
+        # a section that comes back at groove level (closer to the groove than to the
+        # biggest drop) is the groove again, even right after a dip
+        if is_drop and groove_power is not None and pw < (groove_power + top) / 2:
+            is_drop = False
+        if not is_drop and groove_power is None:
+            groove_power = pw
+        kinds.append(DROP if is_drop else GROOVE)
+    # a bass dip that keeps the kick going and leads back into the groove is still groove
+    for i in range(len(pieces) - 1):
+        a, b = pieces[i][0], pieces[i][1]
+        if kinds[i] == BREAKDOWN and kinds[i + 1] == GROOVE and i > 0 and m["kick"][a:b].mean() >= 0.6:
+            kinds[i] = GROOVE
 
     out: list[Section] = []
     for i, ((a, b, f, _), kind) in enumerate(zip(pieces, kinds)):
@@ -230,10 +244,10 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             # build really started 3 bars earlier, with the kick still going.
             blen = int(np.clip(np.ceil(blen / PHRASE) * PHRASE, PHRASE, 32))
         start = max(lo, b - blen)
-        # drops come in whole 8-bar phrases. If this build would leave the drop before it
-        # on a half phrase (say 12 bars), the build really started 4 bars earlier, with
-        # the kick still going (it sounds like the drop, so only the phrase gives it away)
-        if out and out[-1].kind == DROP and out[-1].end_bar >= start:
+        # drops and grooves come in whole 8-bar phrases. If this build would leave the
+        # section before it on a half phrase (say 12 bars), the build really started 4 bars
+        # earlier, with the kick still going (it sounds the same, only the phrase tells)
+        if out and out[-1].kind in (DROP, GROOVE) and out[-1].end_bar >= start:
             dlen = start - out[-1].start_bar
             if dlen >= 12 and dlen % 8 == 4:
                 start -= 4
