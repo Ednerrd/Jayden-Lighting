@@ -306,3 +306,32 @@ def test_crowd_sweep_in_rotations_and_no_blinders_rig_safety():
     assert rig.blinders_enabled
     rig.safety["blinders"] = False
     assert not rig.blinders_enabled
+
+
+# ---------------------------------------------------------------- real tracks
+# Per-bar features pasted from the web page's "Copy analysis" button (values x100),
+# with the structure the user heard. Keeps real-world fixes from regressing.
+import os as _os
+
+
+def _load_bars(name):
+    m = {}
+    with open(_os.path.join(_os.path.dirname(__file__), "real_tracks", name)) as f:
+        for line in f:
+            k, v = line.split(":")
+            m[k.strip()] = np.array([float(x) for x in v.split(",")]) / 100
+    return m
+
+
+def test_real_not_even_love_builds():
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 0.27, 1.846  # first downbeat (s), bar length (s) at 130 BPM
+    secs = label_sections(_load_bars("not_even_love.txt"))
+    builds = [t0 + s.start_bar * bar for s in secs if s.kind == "build"]
+    drops = [t0 + s.start_bar * bar for s in secs if s.kind == "drop"]
+    # user: build 1:08 -> drop 1:15 ; build 2:14 -> drop 2:29
+    assert any(abs(b - 68) < 2 for b in builds), builds
+    assert any(abs(b - 134) < 2 for b in builds), builds
+    assert any(abs(d - 75) < 2 for d in drops), drops
+    assert any(abs(d - 149) < 2 for d in drops), drops
