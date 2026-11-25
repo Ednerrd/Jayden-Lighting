@@ -314,12 +314,18 @@ def test_crowd_sweep_in_rotations_and_no_blinders_rig_safety():
 import os as _os
 
 
-def _load_bars(name):
+def _load_bars(name, folder=None):
     m = {}
-    with open(_os.path.join(_os.path.dirname(__file__), "real_tracks", name)) as f:
+    keys = ("kick", "low", "energy", "high", "tension", "density")
+    with open(_os.path.join(folder or _os.path.join(_os.path.dirname(__file__), "real_tracks"), name)) as f:
         for line in f:
-            k, v = line.split(":")
-            m[k.strip()] = np.array([float(x) for x in v.split(",")]) / 100
+            k, _, v = line.partition(":")
+            if k.strip() not in keys:
+                continue  # header lines, live_* trace lines from newer pastes
+            try:
+                m[k.strip()] = np.array([float(x) for x in v.split(",")]) / 100
+            except ValueError:
+                continue
     return m
 
 
@@ -398,6 +404,7 @@ def test_real_tracks_python_matches_js():
 
     import pytest
 
+    from jaylights.analysis.live_sections import simulate_live_bars
     from jaylights.analysis.sections import label_sections
 
     if not shutil.which("node"):
@@ -408,3 +415,101 @@ def test_real_tracks_python_matches_js():
         r = json.loads(line)
         py = [[s.kind, s.start_bar, s.end_bar] for s in label_sections(_load_bars(r["name"]))]
         assert py == r["sections"], (r["name"], py, r["sections"])
+        # the causal live simulation (bar by bar, past only) must match too
+        live = [[s.kind, s.start_bar, s.end_bar] for s in simulate_live_bars(_load_bars(r["name"]))]
+        assert live == r["live"], (r["name"], live, r["live"])
+
+
+def test_load_bars_ignores_header_and_live_trace_lines(tmp_path):
+    (tmp_path / "x.txt").write_text("# header: bpm 128\nkick: 10,20\nlow: 30,40\nlive_sec: G,B\nlive_low: 1,2\nlive_lock: 1,0\nnotes: n/a\n")
+    m = _load_bars("x.txt", folder=str(tmp_path))
+    assert sorted(m) == ["kick", "low"] and list(m["low"]) == [0.3, 0.4]
+
+
+# ---------------------------------------------------------------- live (causal) on real tracks
+def _live_secs(name, t0, bar):
+    """Bar-by-bar causal sections as (kind, start s, end s, bars)."""
+    from jaylights.analysis.live_sections import simulate_live_bars
+    return [(s.kind, t0 + s.start_bar * bar, t0 + s.end_bar * bar, s.end_bar - s.start_bar)
+            for s in simulate_live_bars(_load_bars(name))]
+
+
+def _check_live(secs, bar, drops, builds, max_sections, extra_drops=()):
+    """Shared live targets: every real drop called within a bar of its start, nothing else,
+    no flicker, a build before every drop, no more than max_sections sections."""
+    got = [a for k, a, b, n in secs if k == "drop"]
+    for T in drops:
+        assert any(-1.0 <= a - T <= bar for a in got), (T, got)
+    others = [a for a in got if not any(-1.0 <= a - T <= bar for T in drops)]
+    assert all(any(abs(a - X) <= bar for X in extra_drops) for a in others), ("false drops", others, secs)
+    assert len(secs) <= max_sections, (len(secs), secs)
+    for i, (k, a, b, n) in enumerate(secs):  # a section holds >= 2 bars, except the 1-bar run-up to a drop
+        assert n >= 2 or (k == "build" and i + 1 < len(secs) and secs[i + 1][0] == "drop"), ("flicker", secs[i], secs)
+    for D, B0 in zip(drops, builds):  # live can only call a build late, but it must call it before the drop
+        assert any(k == "build" and a >= B0 - bar and b > B0 and b <= D + bar for k, a, b, n in secs), (B0, D, secs)
+
+
+def _kind_at(secs, t):
+    return next(k for k, a, b, n in secs if a <= t < b)
+
+
+def test_real_not_even_love_live():
+    t0, bar = 0.27, 1.846
+    secs = _live_secs("not_even_love.txt", t0, bar)
+    # user: build 1:08 -> drop 1:15; build 2:15 -> drop 2:29. (3:06 build -> 3:14 is the same pause + slam
+    # pattern; the sub only dips 0.03 short of the cut threshold there, so live holds the drop through it.)
+    _check_live(secs, bar, [75, 149], [68, 134], 10)
+    for t in (110, 115, 120, 125, 130):  # 1:45 -> 2:15 stays groove: no drop, no breakdown
+        assert _kind_at(secs, t) == "groove", (t, secs)
+
+
+def test_real_chicken_soup_live():
+    t0, bar = 0.05, 1.791
+    secs = _live_secs("chicken_soup.txt", t0, bar)
+    # user: build 0:28 (2nd build 0:36), pause 0:41, drop 0:43 -> 1:11, groove, build 1:33, drop ~1:47.5
+    _check_live(secs, bar, [43, 107.5], [28, 93], 10)
+    assert _kind_at(secs, 37.7) == "build"  # the 2nd, more intense build is not a drop
+    assert _kind_at(secs, 41.5) == "build"
+
+
+def test_real_love_sosa_live():
+    t0, bar = 1.34, 1.714
+    secs = _live_secs("love_sosa.txt", t0, bar)
+    # user: groove 0:26, build 0:41 (2nd build 0:55), drop 1:01, vocal cut 1:15 stays drop, groove 1:29,
+    # build 2:10 (2nd build 2:37), drop 2:51
+    _check_live(secs, bar, [61, 171], [41, 130], 10)
+    for t in (75.5, 76, 77):  # the vocal cut
+        assert _kind_at(secs, t) == "drop", (t, secs)
+    for t in (2 * 60 + 40, 2 * 60 + 45, 2 * 60 + 49):  # the sub comes back in the 2nd build, no drop yet
+        assert _kind_at(secs, t) == "build", (t, secs)
+
+
+def test_live_bar_features_and_sections_python_matches_js(tmp_path):
+    """The causal bar features (rolling-percentile normalisation) and the section machine on top of
+    them must be the same in Python and in web/engine.js, bar for bar."""
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    audio, _ = make_track(bpm=128)
+    path = tmp_path / "t.f32"
+    audio.astype("<f4").tofile(path)
+    root = _os.path.dirname(_os.path.dirname(__file__))
+    out = subprocess.run(["node", _os.path.join(root, "tools", "js_runner.js"), str(path), str(SR), "auto"],
+                         capture_output=True, text=True, check=True).stdout
+    js = json.loads(out)["live"]["bars"]
+    la = LiveAnalyzer(SR, (90.0, 190.0), 0.0)
+    for i in range(0, len(audio), 512):
+        la.push(audio[i:i + 512])
+    py = la.bar_trace
+    assert len(py) == len(js) > 40
+    # float32 (numpy) vs float64 (JS) feature maths makes a few bars drift a little, so: tight on average, close on most
+    for k in ("kick", "low", "energy", "high", "tension", "density"):
+        d = np.array([abs(a[k] - b[k]) for a, b in zip(py, js)])
+        assert d.mean() < 0.02 and np.mean(d < 0.05) > 0.9, (k, d.mean(), np.mean(d < 0.05))
+    same = np.mean([a["section"] == b["section"] for a, b in zip(py, js)])
+    assert same > 0.9, same
+    kinds = {a["section"] for a in py}
+    assert DROP in kinds and BUILD in kinds  # the synthetic track's build + drop are heard live

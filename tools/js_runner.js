@@ -35,7 +35,7 @@ const J = require(path.join(__dirname, "..", "web", "engine.js"));
   const out = {
     bpm: tl.bpm, beats: Array.from(tl.beats), downbeat_phase: tl.phase,
     sections: tl.sections.map(s => ({ kind: s.kind, start: s.start, end: s.end })),
-    live: { sections: secs, beats },
+    live: { sections: secs, beats, bars: la.barTrace },
   };
   process.stdout.write(JSON.stringify(out));
 })().catch(e => { console.error(e.stack || e); process.exit(1); });

@@ -254,7 +254,7 @@ async function loadTrack(key) {
       const r = await Jaylights.analyzeTrack(mono, sr, DEMO_GENRE[key], analysisProgress);
       // keep the known truth (and nominal bpm) from meta.json, take the detected lanes from this analysis
       const t = meta.tracks[key];
-      Object.assign(t, { frames: r.track.frames, detected_bpm: r.track.detected_bpm, offline_sections: r.track.offline_sections, live_sections: r.track.live_sections });
+      Object.assign(t, { frames: r.track.frames, detected_bpm: r.track.detected_bpm, offline_sections: r.track.offline_sections, live_sections: r.track.live_sections, live_bars: r.track.live_bars });
       cache[key] = { states: r.states, genre: DEMO_GENRE[key], url: URL.createObjectURL(blob), tl: r.timeline, name: key };
     } finally { $("busy").hidden = true; $("start").hidden = started; }
   }
@@ -516,6 +516,18 @@ function reportText() {
     L.push(`downbeat ${tl.phase} | first bar ${tl.bars.start[0].toFixed(2)} s | bar ${(240 / tl.bpm).toFixed(3)} s`);
     for (const k of ["kick", "low", "energy", "high", "tension", "density"])
       L.push(k + ": " + tl.bars[k].map(v => Math.round(v * 100)).join(","));
+  }
+  // what the LIVE analyzer saw, one entry per bar it heard (its own bar grid, so the bars don't line up with the
+  // offline ones above): its six causal features x100, the section it called (I intro, G groove, K breakdown,
+  // B build, D drop, O outro), whether the beat tracker was locked, and the time (s) the bar ended
+  const lb = t.live_bars;
+  if (lb && lb.length) {
+    const LETTER = { intro: "I", groove: "G", breakdown: "K", build: "B", drop: "D", outro: "O" };
+    L.push("live_key: I intro, G groove, K breakdown, B build, D drop, O outro | one entry per live bar, x100");
+    for (const k of ["kick", "low", "energy", "high", "tension", "density"]) L.push("live_" + k + ": " + lb.map(b => Math.round(b[k] * 100)).join(","));
+    L.push("live_sec: " + lb.map(b => LETTER[b.section] || "?").join(","));
+    L.push("live_lock: " + lb.map(b => (b.locked ? 1 : 0)).join(","));
+    L.push("live_t: " + lb.map(b => b.t.toFixed(1)).join(","));
   }
   return L.join("\n");
 }

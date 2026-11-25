@@ -19,6 +19,7 @@ import numpy as np
 from ..state import BREAKDOWN, BUILD, DROP, GROOVE, INTRO, MusicState
 from .beats import downbeat_scores, estimate_tempo, fold_phase
 from .features import FeatureExtractor
+from .live_sections import LiveSections
 
 
 class AutoGain:
@@ -87,6 +88,68 @@ def _ratio_related(a: float, b: float, tol: float = 0.015) -> bool:
     return any(abs(r / q - 1) < tol for q in (0.5, 2 / 3, 0.75, 4 / 3, 1.5, 2.0))
 
 
+class BarFeatures:
+    """The six per-bar features of sections.bar_features(), but computed causally.
+
+    Offline normalises every band against the whole track's percentiles. Live only has the
+    last ~3 minutes of frames, so the same robust_norm (5th..98th percentile) is taken over a
+    rolling window of the frames heard so far (the bar itself included), and each bar is
+    scaled with the percentiles as they stand when the bar ends.
+    """
+
+    KEYS = ("low", "energy", "high", "bright", "noise", "kflux")
+
+    def __init__(self, frame_rate: float, window_s: float = 180.0):
+        n = int(window_s * frame_rate)
+        self.win = {k: deque(maxlen=n) for k in self.KEYS}
+        self.chunks: deque = deque(maxlen=4)   # the last 4 beats
+        self.cur = self._new()
+        self.hit_hist: list[int] = []
+
+    @staticmethod
+    def _new():
+        return {"low": [], "energy": [], "high": [], "bright": [], "noise": [], "kmax": 0.0, "hits": 0}
+
+    def add(self, f, hits: int):
+        c = self.cur
+        vals = {"low": float(f["kick_e"]), "energy": 20 * math.log10(float(f["rms"]) + 1e-6),
+                "high": float(f["hat_e"]) * 0.6 + float(f["snare_e"]) * 0.4, "bright": math.log(float(f["centroid"]) + 1),
+                "noise": float(f["flatness"]), "kflux": float(f["kick_flux"])}
+        for k in self.KEYS:
+            self.win[k].append(vals[k])
+        for k in ("low", "energy", "high", "bright", "noise"):
+            c[k].append(vals[k])
+        c["kmax"] = max(c["kmax"], vals["kflux"])
+        c["hits"] += hits
+
+    def end_beat(self):
+        self.chunks.append(self.cur)
+        self.cur = self._new()
+
+    def ready(self) -> bool:
+        return len(self.chunks) == 4
+
+    def row(self) -> dict:
+        ch = list(self.chunks)
+        p95 = float(np.percentile(np.fromiter(self.win["kflux"], float), 95)) + 1e-9
+        beat_kick = sorted(min(max(c["kmax"] / p95, 0.0), 1.5) for c in ch)
+
+        def norm(key):
+            w = np.fromiter(self.win[key], float)
+            lo, hi = np.percentile(w, [5, 98])
+            x = np.concatenate([np.asarray(c[key], float) for c in ch])
+            if hi - lo < 1e-9 or len(x) == 0:
+                return 0.0
+            return float(np.clip((x - lo) / (hi - lo), 0.0, 1.0).mean())
+
+        high, bright, noise = norm("high"), norm("bright"), norm("noise")
+        hits = sum(c["hits"] for c in ch)
+        self.hit_hist.append(hits)
+        dens = hits / max(1.0, float(np.percentile(self.hit_hist, 95)))
+        return {"kick": beat_kick[-2], "low": norm("low"), "energy": norm("energy"), "high": high,
+                "tension": (high + bright + noise) / 3, "density": dens}
+
+
 class LiveAnalyzer:
     def __init__(self, sr: int, bpm_range=(90.0, 190.0), latency: float = 0.0):
         self.fx = FeatureExtractor(sr)
@@ -125,20 +188,22 @@ class LiveAnalyzer:
         self.section_index = 0
         self.section_start_beat = 0.0
         self.no_kick_beats = 0
-        self.drop_energy = 0.0
         self.forced: str | None = None
         self._low_slow = -9.0
         self._kick_ref = None
         self._pre_drop = None   # set while a drop is still provisional
-        self._pre_drop_low = 0.0
-        self._drop_low = None
         self.low_ref = None          # running "drop level" of the sub (log10 power, per-beat median)
         self.peak_ref = None         # same, for the per-beat loudest frame (kick hits)
         self._cooldown_until = -1.0  # no instant drops until this beat (after a false alarm)
         self._kick_beat, self._prev_kick_e = 0.0, -9.0
-        self._drop_ref_energy = None  # loudness of confirmed drops (dB)
         self._full = True            # is the floor shaking right now (with hysteresis)
         self._empty_beats = 0
+        self._freeze = False         # the floor is out (build / breakdown): don't chase hits, free-run the grid
+        self._freeze_min = 0.0
+        # the bar-level section machine (causal twin of the offline labeller) and what it saw
+        self.bars = BarFeatures(fr)
+        self.sections = LiveSections()
+        self.bar_trace: list[dict] = []   # per bar: its six causal features, section, lock (for Copy analysis)
         # rolling window for finding the "1" with the same method as offline mode
         self._fbuf = deque(maxlen=int(16 * fr))   # (coarse, kick_flux, snare_flux) per frame
         self._beat_frames = deque(maxlen=48)      # (frame number, beat number) at each beat
@@ -207,7 +272,11 @@ class LiveAnalyzer:
         # triggered by the sub level itself crossing up (onset detectors get deafened by
         # risers and snare rolls right when it matters)
         prev_low, self._prev_kick_e = self._prev_kick_e, f["kick_e"]
-        if (not self.forced and self.section in (BUILD, BREAKDOWN) and self._pre_drop is None
+        # armed in a build, or in a breakdown / a groove whose sub is dipping or cut
+        # (the bar machine decides later whether the slam was real)
+        dipping = self.section == GROOVE and (self.sections.dip_run >= 2 or self.sections.empty_run >= 1)
+        floor_out = self._empty_beats >= 2 and self.section != DROP
+        if (not self.forced and (self.section in (BUILD, BREAKDOWN) or dipping or floor_out) and self._pre_drop is None
                 and self.peak_ref is not None and len(self.hist) >= 16
                 and self.beat_pos > self._cooldown_until
                 # from a breakdown: only after 2+ bars and once tension is up (a kick coming
@@ -220,17 +289,19 @@ class LiveAnalyzer:
             # a drop is a low end we haven't heard for at least 4 bars
             unheard = max(x["peak"] for x in hist[-16:]) + 0.25
             level = max(self.peak_ref - 0.3, recent + 0.35, unheard)
-            if f["kick_e"] > level >= prev_low and (self._empty_beats >= 1 or recent < self.peak_ref - 0.35):
+            # ...or the very first hit after a silent gap (kick-through builds never leave the sub
+            # "unheard", but a real gap before the slam is just as clear a cue)
+            after_gap = (self.section == BUILD and self._empty_beats >= 2 and self.sections.run >= 2
+                         and f["kick_e"] > self.peak_ref - 0.3 and prev_low < self.peak_ref - 0.6)
+            if (f["kick_e"] > level >= prev_low and (self._empty_beats >= 1 or recent < self.peak_ref - 0.35)) or after_gap:
                 self._kick_beat = self._beat_at_latency(-0.5 / fr)
                 b = round(self._kick_beat)
                 self._pre_drop = (self.section, self.section_start_beat, self.downbeat_offset, b)
-                self._pre_drop_low = recent
                 self.beat_pos += b - self._kick_beat       # the drop is ON the beat
                 prev_beat = self.beat_pos - 1e-6
                 self.downbeat_offset = b % 4              # ...and on the 1
                 self._db_score[b % 4] += 3.0
                 self._set_section(DROP)
-                self.drop_energy = -120.0                 # measured over the next beats
                 self._kick_env = 1.0
 
         # per-beat accumulation
@@ -245,6 +316,7 @@ class LiveAnalyzer:
         acc["tension"].append(f["hat_e"] + 2.0 * bright + 3.0 * f["flatness"])
         if s > 0:
             acc["snares"] += 1
+        self.bars.add(f, (1 if s > 0 else 0) + (1 if h > 0 else 0))
         self._fbuf.append((f["coarse"], f["kick_flux"], f["snare_flux"]))
         if math.floor(self.beat_pos) > math.floor(prev_beat):
             self._on_beat()
@@ -273,7 +345,7 @@ class LiveAnalyzer:
         if env.std() < 1e-4:
             self.locked = False
             return
-        if self.locked and (not (self._kick_running() or self._full) or self.section in (BUILD, BREAKDOWN)):
+        if self.locked and (not (self._kick_running() or self._full) or self._freeze):
             # breakdown / build: nothing solid to follow (snare rolls lie), and the
             # tempo doesn't change mid-track, so just let the grid free-run
             return
@@ -388,68 +460,33 @@ class LiveAnalyzer:
         elif low < self.low_ref - 0.8:
             self._full = False
         self._empty_beats = 0 if self._full else self._empty_beats + 1
-        if not self.forced:
-            self._sections()
+        if self._empty_beats >= 2:
+            if not self._freeze:
+                self._freeze, self._freeze_min = True, self.beat_pos + 6
+        elif self._freeze and self._full and self.beat_pos >= self._freeze_min:
+            self._freeze = False
+        self.bars.end_beat()
+        if (int(math.floor(self.beat_pos)) - self.downbeat_offset) % 4 == 0 and self.bars.ready():
+            self._on_bar(self.bars.row())
 
-    def _rising(self) -> bool:
-        """Tension climbing for the last few bars: risers, hats opening up, snare rolls."""
-        h = list(self.hist)
-        if len(h) < 16:
-            return False
-        tension = np.array([x["tension"] for x in h[-16:]])
-        snares = np.array([x["snares"] for x in h[-16:]])
-        climb = np.polyfit(np.arange(16), tension, 1)[0] > 0.01 and tension[-4:].mean() > tension[:4].mean() + 0.15
-        roll = snares[-4:].mean() >= snares[:4].mean() + 1.5
-        return bool(climb or roll)
-
-    def _sections(self):
-        h = list(self.hist)
-        if len(h) < 8:
+    def _on_bar(self, row: dict):
+        """A bar just ended: hand its causal features to the section machine. The machine
+        decides the section; a provisional drop (the frame-level trigger that fired mid-bar on
+        the first sub hit) is confirmed if the machine agrees, taken back if it doesn't."""
+        kind = self.sections.push(row, slam=self._pre_drop is not None)
+        self.bar_trace.append(dict(row, section=kind, locked=bool(self.locked), t=self.frame / self.fr))
+        if self.forced:
+            self._pre_drop = None
             return
-        beats_in = self.beat_pos - self.section_start_beat
-        energy = float(np.mean([x["energy"] for x in h[-4:]]))
-        rising = self._rising()
-        sec = self.section
-
         if self._pre_drop is not None:
-            # provisional drop: the floor has to stay up, or we take it back
-            if beats_in >= 3:
-                peaks = [x["peak"] for x in h[-3:]]
-                weak = self._drop_ref_energy is not None and energy < self._drop_ref_energy - 4
-                if weak or np.mean(peaks) < max(self.peak_ref - 0.45, self._pre_drop_low + 0.2):
-                    prev, start, offset, _ = self._pre_drop
-                    self.section, self.section_start_beat, self.downbeat_offset = prev, start, offset
-                    self.section_index += 1
-                    self._cooldown_until = self.beat_pos + 16  # don't cry wolf again right away
-                else:
-                    e = float(np.mean([x["energy"] for x in h[-3:]]))
-                    self._drop_ref_energy = e if self._drop_ref_energy is None else max(e, self._drop_ref_energy - 1)
-                self._pre_drop = None
-            return
-        if beats_in < 8:
-            return  # hold every section for at least 2 bars, no flicker
-
-        if sec in (GROOVE, DROP):
-            if self.drop_energy < -100 and sec == DROP:
-                self.drop_energy = energy
-            if self._empty_beats >= 2:
-                self._set_section(BUILD if rising else BREAKDOWN)
-            elif sec == DROP:
-                self.drop_energy = max(self.drop_energy - 0.02, float(np.mean([x["energy"] for x in h[-8:]])))
-                earlier = float(np.mean([x["energy"] for x in h[-8:-4]]))
-                if energy < self.drop_energy - 6 and earlier < self.drop_energy - 6 and beats_in > 32:
-                    self._set_section(GROOVE)
-            elif rising and beats_in > 32 and np.mean([x["snares"] for x in h[-4:]]) >= 3:
-                self._set_section(BUILD)  # build with the kick still going
-        elif sec == BREAKDOWN:
-            if rising and beats_in >= 8:
-                self._set_section(BUILD)
-            elif self._full and self._empty_beats == 0 and beats_in > 8:
-                # floor came back without a big hit: a soft return, call it a groove
-                self._set_section(GROOVE)
-        elif sec == BUILD:
-            if self._full and not rising and beats_in > 64:
-                self._set_section(GROOVE)  # build that never dropped
+            if kind != DROP:
+                prev, start, offset, _ = self._pre_drop
+                self.section, self.section_start_beat, self.downbeat_offset = prev, start, offset
+                self.section_index += 1
+                self._cooldown_until = self.beat_pos + 16  # don't cry wolf again right away
+            self._pre_drop = None
+        if kind != self.section:
+            self._set_section(kind)
 
     def _set_section(self, kind: str):
         if kind != self.section:

@@ -639,6 +639,151 @@
 
   function median(a) { const s = Float64Array.from(a).sort(), n = s.length; return n % 2 ? s[(n - 1) >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2; }
 
+  // ---------------------------------------------------------------- live section machine (twin of analysis/live_sections.py)
+  const LS_FULL_WITHIN = 0.15, LS_EMPTY_BELOW = 0.42, LS_FLOOR = 0.35, LS_TENSION_UP = 0.10, LS_HOLD = 2;
+  const meanOf = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
+  class LiveSections {
+    constructor() {
+      this.kind = INTRO; this.run = 0; this.rows = []; this.kinds = []; this.full = []; this.power = [];
+      this.lowRef = 0; this.pwRef = 0; this.gTe = null; this.gN = 0; this.gPw = null;
+      this.emptyRun = 0; this.fullRun = 0; this.dipRun = 0; this.buildCut = 0; this.curCut = 0;
+      this.dropRef = null; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; this.sinceDrop = 99; this.kTeMin = 9;
+    }
+    dips4() { let n = 0; for (const f of this.full.slice(-4)) if (!f) n++; return n; }
+    teUp(te) { return this.gN >= 8 && this.gTe !== null && te >= this.gTe + LS_TENSION_UP; }
+    enter(kind) {
+      if (kind === this.kind) return;
+      this.kind = kind;
+      if (kind === BREAKDOWN) this.kTeMin = Math.min(...this.rows.slice(-3).map(r => r.tension));
+      if (kind === BUILD) this.buildCut = this.curCut;
+      if (kind === DROP) { this.dropRef = [0, 0, 0]; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; }
+    }
+    // feed the features of the bar that just ended; slam = the frame-level detector heard the sub slam in at its start
+    push(row, slam = false) {
+      const low = row.low, en = row.energy, hi = row.high, te = row.tension, kick = row.kick;
+      const p = en + 0.5 * low + 0.5 * hi, i = this.rows.length;
+      const prevLow = i ? this.rows[i - 1].low : low, prevP = i ? this.power[i - 1] : p;
+      this.lowRef = Math.max(Math.min(low, prevLow), this.lowRef - 0.001);
+      this.pwRef = Math.max(Math.min(p, prevP), this.pwRef - 0.003);
+      const full = low >= Math.max(this.lowRef - LS_FULL_WITHIN, LS_FLOOR);
+      const empty = this.lowRef >= 0.5 && low < this.lowRef - LS_EMPTY_BELOW;
+      const erPrev = this.emptyRun, dips4 = this.dips4(), j = i - 1 - erPrev;
+      const buildLike = j >= 0 && (this.kinds[j] === BUILD || !this.full[j]), heavyBefore = j >= 0 && this.full[j];
+      this.emptyRun = empty ? this.emptyRun + 1 : 0; this.curCut = this.emptyRun;
+      this.fullRun = full ? this.fullRun + 1 : 0; this.dipRun = full ? 0 : this.dipRun + 1;
+      if (this.kind === BUILD) this.buildCut = Math.max(this.buildCut, this.emptyRun);
+      this.rows.push(row); this.power.push(p); this.full.push(full);
+      const was = this.kind;
+      if (this.kind !== DROP && i >= 1) {
+        const cut = erPrev >= 1 && (buildLike || erPrev >= 3);
+        let hit = false;
+        if (cut && full && this.gTe !== null && te >= this.gTe - 0.1) hit = true;
+        else if (cut && low >= this.lowRef - 0.3 && kick >= 1.2 && p >= 0.82 * this.pwRef) hit = true;
+        else if (erPrev >= 1 && erPrev <= 2 && buildLike && heavyBefore && kick >= 1.4 && this.gTe !== null && te >= this.gTe + 0.08) hit = true;
+        else if (this.kind === BUILD && this.buildCut >= 3 && full && !this.full[i - 1] && p >= 0.9 * this.pwRef) hit = true;
+        else if ((this.kind === BUILD || this.kind === BREAKDOWN) && this.run >= 2 && full && low >= prevLow + 0.15
+                 && p >= meanOf(this.power.slice(-3, -1)) + 0.3) hit = true;
+        else if (slam && (this.kind === BUILD || this.kind === BREAKDOWN || dips4 >= 2 || erPrev >= 1) && low >= this.lowRef - 0.3
+                 && p >= 0.75 * this.pwRef) hit = true;
+        if (hit) this.enter(DROP);
+      }
+      this.kTeMin = Math.min(this.kTeMin, te);
+      if ((this.kind === INTRO || this.kind === GROOVE) && this.gPw !== null && p >= this.gPw + 0.35) { this.gTe = null; this.gPw = null; this.gN = 0; }
+      if (this.kind === DROP) this.inDrop(row); else this.others();
+      if (full && (this.kind === INTRO || this.kind === GROOVE)) {
+        this.gTe = this.gTe === null ? te : 0.75 * this.gTe + 0.25 * te;
+        this.gPw = this.gPw === null ? p : 0.75 * this.gPw + 0.25 * p;
+        this.gN++;
+      }
+      this.run = this.kind === was ? this.run + 1 : 1;
+      this.sinceDrop = this.kind === DROP ? 0 : this.sinceDrop + 1;
+      this.kinds.push(this.kind);
+      return this.kind;
+    }
+    inDrop(row) {
+      if (this.dropN < 4) { this.dropRef[0] += row.low; this.dropRef[1] += row.energy; this.dropRef[2] += row.tension; this.dropN++; }
+      const n = this.dropN, dEn = this.dropRef[1] / n, dTe = this.dropRef[2] / n;
+      const sag = row.energy <= dEn - 0.15;
+      this.sagRun = sag && this.emptyRun === 0 ? this.sagRun + 1 : 0;
+      const slack = row.tension <= dTe - 0.2 && this.emptyRun === 0;
+      this.slackRun = slack ? this.slackRun + 1 : 0;
+      if (!(this.kinds.length && this.kinds[this.kinds.length - 1] === DROP && this.run >= LS_HOLD)) return;
+      if (this.emptyRun >= 3) this.enter(this.teUp(meanOf(this.rows.slice(-3).map(r => r.tension))) ? BUILD : BREAKDOWN);
+      else if (this.sagRun >= 2 || this.slackRun >= 2) this.enter(GROOVE);
+    }
+    others() {
+      if (this.run < LS_HOLD && this.kind !== INTRO) return;
+      const k = this.kind, settling = this.sinceDrop < 8;
+      if (k === INTRO) { if (this.fullRun >= 3) this.enter(GROOVE); }
+      else if (k === GROOVE) {
+        const n = this.rows.length, tes2 = meanOf(this.rows.slice(-2).map(r => r.tension)), g = this.gTe;
+        if (this.emptyRun === 1 && n >= 2 && !this.full[n - 2] && !settling && g !== null && tes2 >= g - 0.05) this.enter(BUILD);
+        else if (this.emptyRun >= 3 || (this.emptyRun === 2 && this.teUp(tes2))) this.enter(this.teUp(meanOf(this.rows.slice(-3).map(r => r.tension))) ? BUILD : BREAKDOWN);
+        else if (this.dipRun >= 2 && this.teUp(tes2) && !settling) this.enter(BUILD);
+        else if (this.dipRun >= 2 && g !== null && tes2 <= g - 0.15) this.enter(BREAKDOWN);
+        else if (n >= 8 && this.gN >= 8 && this.fullRun >= 2 && g !== null && tes2 >= g + 0.15 && !settling
+                 && tes2 >= meanOf(this.rows.slice(-8, -4).map(r => r.tension)) + 0.1) this.enter(BUILD);
+      } else if (k === BREAKDOWN) {
+        const tes2 = meanOf(this.rows.slice(-2).map(r => r.tension));
+        if (this.teUp(tes2) || tes2 >= this.kTeMin + 0.2) this.enter(BUILD);
+        else if (this.fullRun >= 3) this.enter(GROOVE);
+      } else if (k === BUILD) {
+        const te4 = meanOf(this.rows.slice(-4).map(r => r.tension)), quiet = this.gTe !== null && te4 < this.gTe + 0.06;
+        if ((this.run >= 16 && this.fullRun >= 8) || (this.run >= 8 && this.fullRun >= 8 && quiet)) this.enter(GROOVE);
+      }
+    }
+  }
+  // push a track's per-bar features through LiveSections one bar at a time -> [kind, start, end] sections
+  function simulateLiveBars(M) {
+    const n = M.low.length, ls = new LiveSections(), kinds = [];
+    for (let i = 0; i < n; i++) kinds.push(ls.push({ kick: M.kick[i], low: M.low[i], energy: M.energy[i], high: M.high[i], tension: M.tension[i], density: M.density[i] }));
+    const out = [];
+    kinds.forEach((k, i) => { if (out.length && out[out.length - 1].kind === k) out[out.length - 1].end = i + 1; else out.push({ kind: k, start: i, end: i + 1 }); });
+    return out;
+  }
+
+  // fixed-size window of the most recent values (order doesn't matter: only percentiles are taken from it)
+  class Ring {
+    constructor(n) { this.n = n; this.a = new Float64Array(n); this.i = 0; this.count = 0; }
+    push(x) { this.a[this.i] = x; this.i = (this.i + 1) % this.n; if (this.count < this.n) this.count++; }
+    view() { return this.a.subarray(0, this.count); }
+  }
+  // twin of live.BarFeatures: the six per-bar features of sections.bar_features(), normalised causally
+  // (5th..98th percentile of the last ~3 minutes of frames, the bar itself included)
+  const BF_KEYS = ["low", "energy", "high", "bright", "noise", "kflux"];
+  class BarFeatures {
+    constructor(frameRate, windowS = 180) {
+      const n = Math.floor(windowS * frameRate);
+      this.win = {}; for (const k of BF_KEYS) this.win[k] = new Ring(n);
+      this.chunks = []; this.cur = BarFeatures.fresh(); this.hitHist = [];
+    }
+    static fresh() { return { low: [], energy: [], high: [], bright: [], noise: [], kmax: 0, hits: 0 }; }
+    add(F, i, hits) {
+      const c = this.cur;
+      const vals = { low: F.kick_e[i], energy: 20 * Math.log10(F.rms[i] + 1e-6), high: F.hat_e[i] * 0.6 + F.snare_e[i] * 0.4,
+        bright: Math.log(F.centroid[i] + 1), noise: F.flatness[i], kflux: F.kick_flux[i] };
+      for (const k of BF_KEYS) this.win[k].push(vals[k]);
+      for (const k of ["low", "energy", "high", "bright", "noise"]) c[k].push(vals[k]);
+      c.kmax = Math.max(c.kmax, vals.kflux); c.hits += hits;
+    }
+    endBeat() { this.chunks.push(this.cur); if (this.chunks.length > 4) this.chunks.shift(); this.cur = BarFeatures.fresh(); }
+    ready() { return this.chunks.length === 4; }
+    row() {
+      const ch = this.chunks, p95 = percentile(this.win.kflux.view(), 95) + 1e-9;
+      const beatKick = ch.map(c => Math.min(Math.max(c.kmax / p95, 0), 1.5)).sort((a, b) => a - b);
+      const norm = key => {
+        const w = this.win[key].view(), lo = percentile(w, 5), hi = percentile(w, 98);
+        let t = 0, n = 0; for (const c of ch) for (const v of c[key]) { t += clamp((v - lo) / (hi - lo), 0, 1); n++; }
+        return hi - lo < 1e-9 || n === 0 ? 0 : t / n;
+      };
+      const high = norm("high"), bright = norm("bright"), noise = norm("noise");
+      let hits = 0; for (const c of ch) hits += c.hits;
+      this.hitHist.push(hits);
+      const dens = hits / Math.max(1, percentile(this.hitHist, 95));
+      return { kick: beatKick[2], low: norm("low"), energy: norm("energy"), high, tension: (high + bright + noise) / 3, density: dens };
+    }
+  }
+
   class LiveAnalyzer {
     constructor(sr, range = [90, 190], latency = 0.03) {
       const fr = sr / HOP; this.fr = fr; this.range = range; this.latency = latency;
@@ -651,10 +796,11 @@
       this.frame = 0; this.bpm = 128; this.beatPos = 0; this.locked = false; this.bpmVotes = 0; this.pendingBpm = null;
       this.downbeat = 0;
       this.acc = this.newAcc(); this.hist = [];
-      this.section = GROOVE; this.sectionIndex = 0; this.sectionStart = 0; this.dropEnergy = 0; this.forced = null;
-      this.preDrop = null; this.preDropLow = 0;
+      this.section = GROOVE; this.sectionIndex = 0; this.sectionStart = 0; this.forced = null;
+      this.preDrop = null;
       this.lowRef = null; this.peakRef = null; this.cooldownUntil = -1; this.kickBeat = 0; this.prevKickE = -9;
-      this.dropRefEnergy = null; this.full = true; this.emptyBeats = 0;
+      this.full = true; this.emptyBeats = 0; this.freeze = false; this.freezeMin = 0;
+      this.bars = new BarFeatures(fr); this.sections = new LiveSections(); this.barTrace = [];
       this.fbufMax = Math.floor(16 * fr); this.fbuf = []; this.beatFrames = []; this.dbScore = [0, 0, 0, 0]; this.dbHoldUntil = -1;
       this.st = newState(); this.st.locked = false; this.kEnv = 0; this.sEnv = 0; this.hEnv = 0;
       this.dec = { kick: Math.exp(-1 / (0.12 * fr)), snare: Math.exp(-1 / (0.09 * fr)), hat: Math.exp(-1 / (0.05 * fr)) };
@@ -686,20 +832,22 @@
       const frac = this.beatPos - Math.floor(this.beatPos);
       const prevLow = this.prevKickE; this.prevKickE = kE;
       const h4 = this.hist.slice(-4);
-      if (!this.forced && (this.section === BUILD || this.section === BREAKDOWN) && this.preDrop === null
+      const dipping = this.section === GROOVE && (this.sections.dipRun >= 2 || this.sections.emptyRun >= 1);
+      const floorOut = this.emptyBeats >= 2 && this.section !== DROP;
+      if (!this.forced && (this.section === BUILD || this.section === BREAKDOWN || dipping || floorOut) && this.preDrop === null
           && this.peakRef !== null && this.hist.length >= 16 && this.beatPos > this.cooldownUntil
           && (this.section === BUILD || (this.beatPos - this.sectionStart >= 8 && mean(h4.map(x => x.tension)) >= 0.6))) {
         const hist = this.hist, recent = mean(hist.slice(-2).map(x => x.peak));
         const unheard = Math.max(...hist.slice(-16).map(x => x.peak)) + 0.25;
         const level = Math.max(this.peakRef - 0.3, recent + 0.35, unheard);
-        if (kE > level && level >= prevLow && (this.emptyBeats >= 1 || recent < this.peakRef - 0.35)) {
+        const afterGap = this.section === BUILD && this.emptyBeats >= 2 && this.sections.run >= 2 && kE > this.peakRef - 0.3 && prevLow < this.peakRef - 0.6;
+        if ((kE > level && level >= prevLow && (this.emptyBeats >= 1 || recent < this.peakRef - 0.35)) || afterGap) {
           this.kickBeat = this.bAt(-0.5 / fr);
           const b = roundHalfEven(this.kickBeat);
           this.preDrop = [this.section, this.sectionStart, this.downbeat, b];
-          this.preDropLow = recent;
           this.beatPos += b - this.kickBeat; prev = this.beatPos - 1e-6;
           this.downbeat = mod(b, 4); this.dbScore[mod(b, 4)] += 3.0;
-          this.setSection(DROP); this.dropEnergy = -120; this.kEnv = 1;
+          this.setSection(DROP); this.kEnv = 1;
         }
       }
 
@@ -708,6 +856,7 @@
       if (frac < 0.15) { a.kickOn = Math.max(a.kickOn, kf); a.snareOn = Math.max(a.snareOn, sf); }
       a.energy.push(en); a.low.push(kE);
       a.tension.push(F.hat_e[i] + 2 * Math.log(F.centroid[i] + 1) + 3 * F.flatness[i]); if (s > 0) a.snares++;
+      this.bars.add(F, i, (s > 0 ? 1 : 0) + (h > 0 ? 1 : 0));
       this.fbuf.push(i); if (this.fbuf.length > this.fbufMax) this.fbuf.shift();
       if (Math.floor(this.beatPos) > Math.floor(prev)) this.onBeat(F);
       const st = this.st;
@@ -719,7 +868,7 @@
     }
     updateTempo() {
       const env = this.envBuf; if (std(env) < 1e-4) { this.locked = false; return; }
-      if (this.locked && (!(this.kickRunning() || this.full) || this.section === BUILD || this.section === BREAKDOWN)) return;
+      if (this.locked && (!(this.kickRunning() || this.full) || this.freeze)) return;
       const cand = estimateTempo(env, this.fr, this.range, this.everLocked ? this.bpm : 128);
       if (!this.everLocked) this.bpm = cand;
       else if (Math.abs(cand / this.bpm - 1) >= 0.03 && (this.section === DROP || this.frame < 45 * this.fr || !ratioRelated(cand, this.bpm))) {
@@ -775,50 +924,26 @@
       this.lowRef = this.lowRef === null ? low : Math.max(low, this.lowRef - 0.0015);
       if (low > this.lowRef - 0.3) this.full = true; else if (low < this.lowRef - 0.8) this.full = false;
       this.emptyBeats = this.full ? 0 : this.emptyBeats + 1;
-      if (!this.forced) this.sections();
+      if (this.emptyBeats >= 2) { if (!this.freeze) { this.freeze = true; this.freezeMin = this.beatPos + 6; } }
+      else if (this.freeze && this.full && this.beatPos >= this.freezeMin) this.freeze = false;
+      this.bars.endBeat();
+      if (mod(Math.floor(this.beatPos) - this.downbeat, 4) === 0 && this.bars.ready()) this.onBar(this.bars.row());
     }
-    // tension climbing for the last few bars: risers, hats opening up, snare rolls
-    rising() {
-      const h = this.hist; if (h.length < 16) return false;
-      const t = h.slice(-16).map(x => x.tension), sn = h.slice(-16).map(x => x.snares);
-      const climb = slope(t) > 0.01 && mean(t, 12, 16) > mean(t, 0, 4) + 0.15;
-      const roll = mean(sn, 12, 16) >= mean(sn, 0, 4) + 1.5;
-      return climb || roll;
-    }
-    sections() {
-      const h = this.hist; if (h.length < 8) return;
-      const beatsIn = this.beatPos - this.sectionStart, energy = mean(h.slice(-4).map(x => x.energy)), rising = this.rising(), sec = this.section;
+    // a bar just ended: hand its causal features to the section machine. The machine decides the section; a
+    // provisional drop (the frame-level trigger that fired mid-bar on the first sub hit) is confirmed if the machine
+    // agrees, taken back if it doesn't.
+    onBar(row) {
+      const kind = this.sections.push(row, this.preDrop !== null);
+      this.barTrace.push(Object.assign({}, row, { section: kind, locked: !!this.locked, t: this.frame / this.fr }));
+      if (this.forced) { this.preDrop = null; return; }
       if (this.preDrop !== null) {
-        // provisional drop: the floor has to stay up, or we take it back
-        if (beatsIn >= 3) {
-          const peaks = h.slice(-3).map(x => x.peak);
-          const weak = this.dropRefEnergy !== null && energy < this.dropRefEnergy - 4;
-          if (weak || mean(peaks) < Math.max(this.peakRef - 0.45, this.preDropLow + 0.2)) {
-            const [p, s, o] = this.preDrop; this.section = p; this.sectionStart = s; this.downbeat = o; this.sectionIndex++;
-            this.cooldownUntil = this.beatPos + 16;
-          } else {
-            const e = mean(h.slice(-3).map(x => x.energy));
-            this.dropRefEnergy = this.dropRefEnergy === null ? e : Math.max(e, this.dropRefEnergy - 1);
-          }
-          this.preDrop = null;
+        if (kind !== DROP) {
+          const [p, s, o] = this.preDrop; this.section = p; this.sectionStart = s; this.downbeat = o; this.sectionIndex++;
+          this.cooldownUntil = this.beatPos + 16;
         }
-        return;
+        this.preDrop = null;
       }
-      if (beatsIn < 8) return;
-      if (sec === GROOVE || sec === DROP) {
-        if (this.dropEnergy < -100 && sec === DROP) this.dropEnergy = energy;
-        if (this.emptyBeats >= 2) this.setSection(rising ? BUILD : BREAKDOWN);
-        else if (sec === DROP) {
-          this.dropEnergy = Math.max(this.dropEnergy - 0.02, mean(h.slice(-8).map(x => x.energy)));
-          const earlier = mean(h.slice(-8, -4).map(x => x.energy));
-          if (energy < this.dropEnergy - 6 && earlier < this.dropEnergy - 6 && beatsIn > 32) this.setSection(GROOVE);
-        } else if (rising && beatsIn > 32 && mean(h.slice(-4).map(x => x.snares)) >= 3) this.setSection(BUILD);
-      } else if (sec === BREAKDOWN) {
-        if (rising && beatsIn >= 8) this.setSection(BUILD);
-        else if (this.full && this.emptyBeats === 0 && beatsIn > 8) this.setSection(GROOVE);
-      } else if (sec === BUILD) {
-        if (this.full && !rising && beatsIn > 64) this.setSection(GROOVE);
-      }
+      if (kind !== this.section) this.setSection(kind);
     }
     setSection(k) { if (k !== this.section) { this.section = k; this.sectionIndex++; this.sectionStart = roundHalfEven(this.beatPos); } }
     publish() {
@@ -1099,12 +1224,13 @@
     liveSecs.forEach((s, i) => s.end = i + 1 < liveSecs.length ? liveSecs[i + 1].start : dur);
     return {
       track: { bpm: tl.bpm, detected_bpm: Math.round(tl.bpm * 100) / 100, duration: dur, frames,
-        offline_sections: tl.sections.map(s => ({ kind: s.kind, start: s.start, end: s.end })), live_sections: liveSecs, truth: null },
+        offline_sections: tl.sections.map(s => ({ kind: s.kind, start: s.start, end: s.end })), live_sections: liveSecs,
+        live_bars: la.barTrace, truth: null },   // live_bars: per bar, what the live analyzer saw (its 6 causal features, section, lock)
       states: { pre: preStates, live: liveStates },     // keep these: renderShow(states, genre, style) re-renders cheaply
       timeline: tl,
     };
   }
 
-  const api = { BLINDER_COLOR, extractFeatures, analyzeOffline, labelSections, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
+  const api = { BLINDER_COLOR, extractFeatures, analyzeOffline, labelSections, LiveSections, simulateLiveBars, LiveAnalyzer, ShowEngine, demoRig, analyzeTrack, renderShow, frameTime, DROP_STYLES, DROP_ROTATION, SECTIONS, GENRES, FPS };
   if (typeof module !== "undefined" && module.exports) module.exports = api; else root.Jaylights = api;
 })(typeof self !== "undefined" ? self : globalThis);

@@ -20,7 +20,8 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 | `jaylights/analysis/beats.py` | Tempo (ACF plus **bar-level ratio re-rank**), rigid beat grid, kick/snare-aware **downbeat** |
 | `jaylights/analysis/sections.py` | Section labeling from per-bar features (see the rules below) |
 | `jaylights/analysis/offline.py` | Pre-analyzed timeline, `state_at(t)` |
-| `jaylights/analysis/live.py` | Live analyzer: tempo/phase fit, sub-level sections, level-crossing drop trigger |
+| `jaylights/analysis/live.py` | Live analyzer: tempo/phase fit, causal `BarFeatures` (rolling 180 s percentiles), level-crossing drop trigger (mid-bar, snaps the grid) |
+| `jaylights/analysis/live_sections.py` | `LiveSections`: causal bar-by-bar section machine used by live mode; `simulate_live_bars(m)` replays pasted bars through it |
 | `jaylights/show.py` | Show engine: looks per section, 10 drop styles, blinders, crowd aiming |
 | `jaylights/fixtures.py`, `rig.py`, `dmx.py` | Profiles, rig.toml, Enttec Pro / Open DMX / Art-Net |
 | `web/engine.js` | **JS port of all of the above.** It must stay identical to the Python; `tools/eval_analysis.py` checks this. |
@@ -44,7 +45,8 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 
 ## Scores (stress suite, auto range)
 - **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 71%.
-- **Live:** tempo 100%, beat F 0.91, downbeat 0.55, drop recall 71%, 0.42 false drops per track, build recall 84%.
+- **Live (Python):** tempo 100%, beat F 0.92, downbeat 0.58, drop recall 78%, 0.25 false drops per track, build recall 84%, 0.21 false builds per track (was 71% / 0.42 / 1.62 before LiveSections).
+- **Live on real tracks (bar sim):** all 6 heard drops called within a bar, no false drops, 8-9 sections per track. Builds come late (live can't see ahead). Known miss: Not Even Love's 3rd drop (3:14), its sub only dips to 0.45 vs the 0.46 cut.
 
 ## ▶ NEXT TASK: ask Edward which of these three to do first
 Edward asked for these three to be the next task. Start the new chat by asking which one they want (they may say "all"). Recommend 1 if they don't care.
