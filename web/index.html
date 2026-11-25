@@ -517,6 +517,12 @@ function reportText() {
     for (const k of ["kick", "low", "energy", "high", "tension", "density"])
       L.push(k + ": " + tl.bars[k].map(v => Math.round(v * 100)).join(","));
   }
+  // beat level (offline): energy / sub / high per beat, x100, normalised like the bar features. beat k is at
+  // beat_t0 + k * 60 / bpm (the beats are a rigid grid unless the tempo moves)
+  if (tl && tl.beatFeat && tl.beats.length) {
+    L.push(`beat_t0: ${tl.beats[0].toFixed(3)} | beats ${tl.beats.length} | beat ${(60 / tl.bpm).toFixed(4)} s`);
+    for (const k of ["energy", "low", "high"]) L.push("beat_" + k + ": " + tl.beatFeat[k].map(v => Math.round(v * 100)).join(","));
+  }
   // what the LIVE analyzer saw, one entry per bar it heard (its own bar grid, so the bars don't line up with the
   // offline ones above): its six causal features x100, the section it called (I intro, G groove, K breakdown,
   // B build, D drop, O outro), whether the beat tracker was locked, and the time (s) the bar ended

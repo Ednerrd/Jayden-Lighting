@@ -27,7 +27,7 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 | `web/engine.js` | **JS port of all of the above.** It must stay identical to the Python; `tools/eval_analysis.py` checks this. |
 | `web/index.html` | Test page (Front 3D view, Side view, lanes, Copy analysis) |
 | `tools/stress_synth.py`, `tools/eval_analysis.py` | 24-track realistic synthetic suite and harness. Run `python tools/eval_analysis.py --ranges auto --jobs 4` (about 4 minutes; `--no-live` is faster). |
-| `tests/` | pytest suite (94 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
+| `tests/` | pytest suite (96 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
 
 ## Section rules (sections.py) that came from real tracks
 - A bar is **full** if its sub level (kick band, 35–120 Hz) is above p90 − 0.15. The kick detector alone gets fooled by 808s, wobble bass and limiting.
@@ -50,6 +50,12 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - A first section longer than 20 bars with the kick running (starting by bar 2-8) = short intro + breakdown (0:06 to 0:56).
 - Live: after a 4-8 bar dip, groove loudness = groove (no drop at 2:01); "false start" drop cut back to build on its 4th bar (3:12 → 3:18); a build inside a long drop (relax, then climb); no builds in silence. Live tempo: 2:3 / 3:4 ratio jumps now need a DROP with the sub full (the user's phone showed 150 → 100 slips); not reproducible without the audio.
 - Known live misses: 0:06 breakdown (called groove), build 1 at 2:26, a drop flash at 3:12 that's cut 4 bars later.
+
+## Beat-level boundary refinement
+`refine_boundaries` (offline.py / `refineBoundaries` in engine.js) moves NON-drop section starts up to 1 bar either way onto the beat with the sharpest step in mean(energy, sub, high). It needs a step of 0.25+ and at least 2x the bar line's step + 0.15. Drop starts never move. Copy analysis now has `beat_t0`, `beat_energy`, `beat_low` and `beat_high` lines. Breathe It Out boundaries 2:39 / 2:45 / 2:58 (user says ours are ~1 s late) are untested on the real audio; check them with the next paste's beat lines.
+
+## Known gap (Edward decided to leave it)
+The web page's Strobes toggle only dims strobe fixtures at draw time. Pars can still chase up to 10 Hz on the page with Strobes off. Edward said no to fixing it (Nov 2026). The Python rig's `--no-strobe` caps all flashing at 2 Hz. Don't change the page behaviour without asking.
 
 ## Scores (stress suite, auto range)
 - **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.12 false drops per track, build recall 73%.

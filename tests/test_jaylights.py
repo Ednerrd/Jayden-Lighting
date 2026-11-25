@@ -776,3 +776,73 @@ def test_live_bar_features_and_sections_python_matches_js(tmp_path):
     assert same > 0.9, same
     kinds = {a["section"] for a in py}
     assert DROP in kinds and BUILD in kinds  # the synthetic track's build + drop are heard live
+
+
+def _mid_bar_track(bpm=128):
+    """Synthetic track whose breakdown starts 2 beats into a bar (beat 162) and whose groove comes back
+    2 beats before a bar line (beat 190); the drops stay on the bar line. Returns (audio, truth_s dict)."""
+    base = [("intro", 8), ("groove", 8), ("build", 8)]
+    tail = [("build", 8), ("drop", 16), ("outro", 8)]
+    x, _ = make_track(bpm, base + [("drop", 16), ("breakdown", 8), ("groove", 8)] + tail)
+    y, _ = make_track(bpm, base + [("drop", 24), ("breakdown", 8), ("groove", 8)] + tail)
+    beat = 60.0 / bpm
+
+    def B(k):
+        return int(round(k * beat * SR))
+
+    a = np.concatenate([y[:B(162)], x[B(164):B(192)], x[B(192):B(224)], x[B(200):B(202)], x[B(224):]])
+    return a, {"breakdown": 162 * beat, "groove": 190 * beat, "bar_breakdown": 160 * beat, "bar_groove": 192 * beat}
+
+
+def test_mid_bar_boundaries_are_refined_to_the_beat():
+    import jaylights.analysis.offline as off
+
+    a, truth = _mid_bar_track()
+    beat = 60.0 / 128
+    tl = analyze_audio(a, SR)
+    starts = {s["kind"]: [] for s in tl.sections}
+    for s in tl.sections:
+        starts[s["kind"]].append(s["start"])
+    bd = next(s for s in tl.sections if s["kind"] == "breakdown")
+    gr = next(s for s in tl.sections[tl.sections.index(bd) + 1:] if s["kind"] == "groove")
+    assert abs(bd["start"] - truth["breakdown"]) <= beat * 1.01, (bd, truth)
+    assert abs(gr["start"] - truth["groove"]) <= beat * 1.01, (gr, truth)
+    assert bd["start"] != pytest.approx(truth["bar_breakdown"], abs=0.2)  # it really moved off the bar line
+    # sections stay contiguous, ordered, with the end of one == the start of the next (time and beat)
+    for p, n in zip(tl.sections, tl.sections[1:]):
+        assert p["end"] == n["start"] and p["end_beat"] == n["start_beat"] and p["start_beat"] < p["end_beat"]
+    # drops stay exactly where the un-refined analysis put them (on the bar line)
+    saved, off.refine_boundaries = off.refine_boundaries, (lambda *a, **k: None)
+    try:
+        raw = analyze_audio(a, SR)
+    finally:
+        off.refine_boundaries = saved
+    assert [s["kind"] for s in raw.sections] == [s["kind"] for s in tl.sections]
+    for r, s in zip(raw.sections, tl.sections):
+        if s["kind"] == "drop":
+            assert r["start_beat"] == s["start_beat"] and r["start"] == s["start"]
+    # the pre-drop logic keeps working: one beat before a drop the state says drop is next, within 1 beat
+    drop = next(s for s in tl.sections if s["kind"] == "drop")
+    st = tl.state_at(drop["start"] - 0.5 * beat)
+    assert st.next_section == DROP and 0 < st.beats_to_next <= 1.0
+
+
+def test_mid_bar_refinement_python_matches_js(tmp_path):
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    a, _ = _mid_bar_track()
+    tl = analyze_audio(a, SR)
+    path = tmp_path / "m.f32"
+    a.astype("<f4").tofile(path)
+    root = _os.path.dirname(_os.path.dirname(__file__))
+    out = subprocess.run(["node", _os.path.join(root, "tools", "js_runner.js"), str(path), str(SR), "auto"],
+                         capture_output=True, text=True, check=True).stdout
+    js = json.loads(out)["sections"]
+    assert [s["kind"] for s in js] == [s["kind"] for s in tl.sections]
+    for p, j in zip(tl.sections, js):
+        assert abs(p["start"] - j["start"]) < 0.03, (p, j)
+        assert abs(p["end"] - j["end"]) < 0.03, (p, j)

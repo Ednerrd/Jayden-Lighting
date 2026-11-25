@@ -58,6 +58,7 @@ class Timeline:
     curves: dict[str, np.ndarray]  # energy, low, mid, high (0..1)
     onsets: dict[str, np.ndarray]  # kick, snare, hat times (s)
     source: str = ""
+    beat_feat: dict | None = field(default=None, repr=False)  # per-beat energy/low/high (0..1), not saved
     _sec_starts: np.ndarray = field(default=None, repr=False)
 
     def __post_init__(self):
@@ -171,6 +172,82 @@ class Timeline:
         return "\n".join(lines)
 
 
+# ---- beat-level boundary refinement ----
+REFINE_SPAN = 4      # search +-4 beats (one bar) around the bar-line boundary
+REFINE_WIN = 2       # before/after window (beats) for the step measure
+REFINE_MARGIN = 0.15  # the sharpest beat must beat twice the bar-line beat's step plus this much (a bar line that
+#                       already shows part of the change is a real boundary, not a missed one)
+REFINE_MIN_STEP = 0.25  # ... and be a real change (combined energy/sub/high, 0..1)
+REFINE_MIN_SIDE = 0.1  # the two sides of the boundary must differ by this much overall
+REFINE_SIDE = 16     # beats each side used to decide whether the change is up or down
+
+
+def beat_features(feats, beat_frames: np.ndarray) -> dict:
+    """Mean energy / sub / high per beat, normalised like the bar features."""
+    n = len(feats["rms"])
+    series = {
+        "energy": robust_norm(20 * np.log10(feats["rms"] + 1e-6)),
+        "low": robust_norm(feats["kick_e"]),
+        "high": robust_norm(feats["hat_e"] * 0.6 + feats["snare_e"] * 0.4),
+    }
+    ends = np.r_[beat_frames[1:], n]
+    out = {}
+    for k, x in series.items():
+        out[k] = np.array([x[min(a, n - 1): max(min(b, n), min(a, n - 1) + 1)].mean() for a, b in zip(beat_frames, ends)])
+    return out
+
+
+def refine_boundaries(sections: list[dict], beat_times: np.ndarray, bf: dict, duration: float) -> None:
+    """Move each non-drop section boundary from its bar line to the beat (within one bar) where the
+    energy / sub / high level changes most sharply. Drop starts and all labels stay as they are."""
+    nb = len(beat_times)
+    if nb < 2 * REFINE_WIN + 2 or len(sections) < 2:
+        return
+    combo = (bf["energy"] + bf["low"] + bf["high"]) / 3.0
+    W = REFINE_WIN
+
+    def step(c):
+        return float(combo[c:c + W].mean() - combo[c - W:c].mean())
+
+    for i in range(1, len(sections)):
+        cur, prev = sections[i], sections[i - 1]
+        if cur["kind"] == DROP:
+            continue
+        B = cur["start_beat"]
+        if B < W or B + W > nb:
+            continue
+        nxt_start = sections[i + 1]["start_beat"] if i + 1 < len(sections) else nb - 1
+        lo = max(B - REFINE_SPAN, prev["start_beat"] + 2, W)
+        hi = min(B + REFINE_SPAN, nxt_start - 2, nb - W)
+        if hi <= lo:
+            continue
+        a0, b1 = max(prev["start_beat"], B - REFINE_SIDE), min(nxt_start, B + REFINE_SIDE)
+        if b1 - B < 1 or B - a0 < 1:
+            continue
+        side = float(combo[B:b1].mean() - combo[a0:B].mean())
+        if abs(side) < REFINE_MIN_SIDE:
+            continue
+        sign = 1.0 if side > 0 else -1.0
+        base = sign * step(B)
+        best, best_s = B, base
+        for c in range(lo, hi + 1):
+            sc = sign * step(c)
+            if sc > best_s + 1e-9 or (abs(sc - best_s) < 1e-9 and abs(c - B) < abs(best - B)):
+                best, best_s = c, sc
+        if best == B or best_s < REFINE_MIN_STEP or best_s < 2 * max(base, 0.0) + REFINE_MARGIN:
+            continue
+        cur["start_beat"] = best
+        cur["start"] = round(float(beat_times[best]), 4)
+        prev["end_beat"] = best
+        prev["end"] = round(float(beat_times[best]), 4)
+        if prev["kind"] == BUILD and prev.get("stage2_beat") is not None:
+            prev["stage2_beat"] = min(prev["stage2_beat"], max(best - 1, prev["start_beat"] + 1))
+        if cur["kind"] == BUILD and cur.get("stage2_beat") is not None:
+            cur["stage2_beat"] = max(cur["stage2_beat"], best + 1)
+            if cur["stage2_beat"] >= cur["end_beat"]:
+                cur["stage2_beat"] = None
+
+
 def analyze_audio(audio: np.ndarray, sr: int, bpm_range=(90.0, 190.0), source: str = "") -> Timeline:
     fx = FeatureExtractor(sr)
     feats = fx.push(audio)
@@ -216,6 +293,9 @@ def analyze_audio(audio: np.ndarray, sr: int, bpm_range=(90.0, 190.0), source: s
             "stage2_beat": stage2,
         })
 
+    beat_feat = beat_features(feats, beat_frames)
+    refine_boundaries(sections, beat_times, beat_feat, duration)
+
     dec = slice(None, None, ENV_DECIM)
     curves = {
         "energy": robust_norm(20 * np.log10(feats["rms"] + 1e-6))[dec],
@@ -228,6 +308,7 @@ def analyze_audio(audio: np.ndarray, sr: int, bpm_range=(90.0, 190.0), source: s
         duration=duration, bpm=float(bpm), beats=beat_times, downbeat_phase=phase,
         sections=sections, env_rate=env_rate, curves=curves,
         onsets={k: fx.frame_time(v) for k, v in onset_frames.items()}, source=os.path.basename(source),
+        beat_feat=beat_feat,
     )
 
 

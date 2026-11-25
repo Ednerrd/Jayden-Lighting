@@ -609,6 +609,54 @@
     return changed ? fromLabels(labels) : secs;
   }
   // ---------------------------------------------------------------- offline timeline
+  // ---- beat-level boundary refinement (twin of analysis/offline.py refine_boundaries) ----
+  const REFINE_SPAN = 4, REFINE_WIN = 2, REFINE_MARGIN = 0.15, REFINE_MIN_STEP = 0.25, REFINE_MIN_SIDE = 0.1, REFINE_SIDE = 16;
+  function beatFeatures(F, bf) {
+    const n = F.n;
+    const series = {
+      energy: robustNorm(F.rms.map(v => 20 * Math.log10(v + 1e-6))),
+      low: robustNorm(F.kick_e),
+      high: robustNorm(F.hat_e.map((v, i) => v * 0.6 + F.snare_e[i] * 0.4)),
+    };
+    const out = {};
+    for (const k of Object.keys(series)) {
+      out[k] = bf.map((a, i) => { const b = i + 1 < bf.length ? bf[i + 1] : n, a0 = Math.min(a, n - 1); return mean(series[k], a0, Math.max(Math.min(b, n), a0 + 1)); });
+    }
+    return out;
+  }
+  function refineBoundaries(sections, beats, bfeat) {
+    const nb = beats.length, W = REFINE_WIN;
+    if (nb < 2 * W + 2 || sections.length < 2) return;
+    const combo = bfeat.energy.map((v, i) => (v + bfeat.low[i] + bfeat.high[i]) / 3);
+    const step = c => mean(combo, c, c + W) - mean(combo, c - W, c);
+    for (let i = 1; i < sections.length; i++) {
+      const cur = sections[i], prev = sections[i - 1];
+      if (cur.kind === DROP) continue;
+      const B = cur.start_beat;
+      if (B < W || B + W > nb) continue;
+      const nxt = i + 1 < sections.length ? sections[i + 1].start_beat : nb - 1;
+      const lo = Math.max(B - REFINE_SPAN, prev.start_beat + 2, W), hi = Math.min(B + REFINE_SPAN, nxt - 2, nb - W);
+      if (hi <= lo) continue;
+      const a0 = Math.max(prev.start_beat, B - REFINE_SIDE), b1 = Math.min(nxt, B + REFINE_SIDE);
+      if (b1 - B < 1 || B - a0 < 1) continue;
+      const side = mean(combo, B, b1) - mean(combo, a0, B);
+      if (Math.abs(side) < REFINE_MIN_SIDE) continue;
+      const sign = side > 0 ? 1 : -1, base = sign * step(B);
+      let best = B, bestS = base;
+      for (let c = lo; c <= hi; c++) {
+        const sc = sign * step(c);
+        if (sc > bestS + 1e-9 || (Math.abs(sc - bestS) < 1e-9 && Math.abs(c - B) < Math.abs(best - B))) { best = c; bestS = sc; }
+      }
+      if (best === B || bestS < REFINE_MIN_STEP || bestS < 2 * Math.max(base, 0) + REFINE_MARGIN) continue;
+      cur.start_beat = best; cur.start = beats[best];
+      prev.end_beat = best; prev.end = beats[best];
+      if (prev.kind === BUILD && prev.stage2_beat !== null && prev.stage2_beat !== undefined) prev.stage2_beat = Math.min(prev.stage2_beat, Math.max(best - 1, prev.start_beat + 1));
+      if (cur.kind === BUILD && cur.stage2_beat !== null && cur.stage2_beat !== undefined) {
+        cur.stage2_beat = Math.max(cur.stage2_beat, best + 1);
+        if (cur.stage2_beat >= cur.end_beat) cur.stage2_beat = null;
+      }
+    }
+  }
   function analyzeOffline(F, range = [90, 190]) {
     const fr = F.frameRate, sr = F.sr, duration = (F.n - 1) * HOP / sr + FRAME / sr;
     const env = onsetEnvelope(F);
@@ -627,6 +675,8 @@
       const stage2 = s.stage2 !== null && s.stage2 !== undefined && s.stage2 < barStarts.length ? barStarts[s.stage2] : null;
       return { kind: s.kind, start: sb > 0 ? beats[sb] : 0, end: eb < beats.length - 1 ? beats[eb] : duration, start_beat: sb > 0 ? sb : 0, end_beat: eb, stage2_beat: stage2 };
     });
+    const beatFeat = beatFeatures(F, bf);
+    refineBoundaries(secs, beats, beatFeat);
     const dec = a => { const o = []; for (let i = 0; i < a.length; i += ENV_DECIM) o.push(a[i]); return o; };
     const curves = {
       energy: dec(robustNorm(F.rms.map(v => 20 * Math.log10(v + 1e-6)))),
@@ -638,6 +688,7 @@
       { kick: on.kick.map(f => frameTime(f, sr)), snare: on.snare.map(f => frameTime(f, sr)), hat: on.hat.map(f => frameTime(f, sr)) });
     // what the section labeler saw, bar by bar (for the "copy analysis" report)
     tl.bars = { start: barStarts.map(b => beats[b]), ...M };
+    tl.beatFeat = beatFeat;
     return tl;
   }
   class Timeline {
