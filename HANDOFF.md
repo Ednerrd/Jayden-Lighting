@@ -5,11 +5,12 @@ Context for the next session picking this project up.
 ## The project
 Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop foreman at a production company, lives in SF and is on Windows. They play house, dubstep, trap, progressive and so on, for fun. The software listens to music, finds beats and sections (intro, groove, breakdown, build, **drop**, outro), and drives DMX lights.
 
-- **Branch:** `ccr-a9f2d96c-j8t85e`. Everything is committed and pushed. No PR has been opened.
+- **Branch:** `claude/jaylights-handoff-wuia4d`. Everything is committed and pushed. No PR has been opened.
 - **Browser test page:** https://claude.ai/artifact/TuE4DvjziUAr8DNTuH1uyE
   - It is published from the files in `web/` plus the demo assets built by `python web/build_demo.py <dir>`.
   - It has three demo tracks (clean house 126, plus realistic dubstep 140 and trap 140), and you can drop in your own track, which is analyzed in the browser.
-  - It has pre-analyzed and live modes, a drop-style picker, a crowd or side view, and a **Copy analysis** button.
+  - It has pre-analyzed and live modes, a drop-style picker, a Front (3D, from the dance floor, no audience) or Side view, and a **Copy analysis** button.
+  - To republish: publish `web/index.html` with `engine.js` as a supporting file to that same URL (the mp3s and meta.json already on it stay).
 - **Hardware:** Edward hasn't given fixture models or a USB-DMX dongle model yet. Ask for them.
 
 ## Layout
@@ -23,9 +24,9 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 | `jaylights/show.py` | Show engine: looks per section, 10 drop styles, blinders, crowd aiming |
 | `jaylights/fixtures.py`, `rig.py`, `dmx.py` | Profiles, rig.toml, Enttec Pro / Open DMX / Art-Net |
 | `web/engine.js` | **JS port of all of the above.** It must stay identical to the Python; `tools/eval_analysis.py` checks this. |
-| `web/index.html` | Test page (crowd 3D view, side view, lanes, Copy analysis) |
+| `web/index.html` | Test page (Front 3D view, Side view, lanes, Copy analysis) |
 | `tools/stress_synth.py`, `tools/eval_analysis.py` | 24-track realistic synthetic suite and harness. Run `python tools/eval_analysis.py --ranges auto --jobs 4` (about 4 minutes; `--no-live` is faster). |
-| `tests/` | pytest suite (73 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis |
+| `tests/` | pytest suite (76 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
 
 ## Section rules (sections.py) that came from real tracks
 - A bar is **full** if its sub level (kick band, 35–120 Hz) is above p90 − 0.15. The kick detector alone gets fooled by 808s, wobble bass and limiting.
@@ -45,12 +46,39 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - **Offline, Python = JS:** tempo 100%, beat F 0.99, downbeat 1.00, drop recall 90%, 0.17 false drops per track, build recall 71%.
 - **Live:** tempo 100%, beat F 0.91, downbeat 0.55, drop recall 71%, 0.42 false drops per track, build recall 84%.
 
-## Open items / next ideas
-1. Drops land about 1 s after where Edward hears them on "Not Even Love" (1:16 vs 1:15). Check the beat-grid and downbeat offset on real tracks.
-2. Live downbeat is only 0.55. Live builds produce about 1.6 false builds per track.
-3. Keep collecting real tracks: Edward pastes Copy analysis, you add it to `tests/real_tracks/` with the timestamps Edward heard, then fix and add a test.
-4. Get Edward's actual fixtures and dongle, write exact profiles, then run `test-rig`.
-5. Ideas: Rekordbox/Serato sync, sACN, pixel bars, haze, user-saved looks.
+## ▶ NEXT TASK: ask Edward which of these three to do first
+Edward asked for these three to be the next task. Start the new chat by asking which one they want (they may say "all"). Recommend 1 if they don't care.
+
+### 1. Live mode on real tracks (the weak spot)
+Live is what Edward would actually use mid-set without pre-analyzing, and it's way off on real songs:
+- **Chicken Soup live:** groove from 0:00, first drop at 1:18 (real: 0:43).
+- **Love Sosa live:** 19 sections with "breakdowns" every few seconds (`groove@0:00 breakdown@0:11 build@0:13 drop@0:27 breakdown@0:41 drop@1:01 breakdown@1:02 groove@1:03 ...`).
+- Code: `jaylights/analysis/live.py` (`LiveAnalyzer._sections`, the drop trigger around "THE DROP: the sub slams back in"), mirrored in `web/engine.js`. Stress suite live: downbeat 0.55, 1.6 false builds per track.
+- **The catch:** the pasted bar features are offline features, and live mode needs audio, so you can't re-run live from the `tests/real_tracks/*.txt` files as they are. Two ways to get around it (pick one, or both):
+  a. Add a causal "live from bars" simulation: run the live section logic bar by bar over the pasted features, seeing only past bars. Fast to test against Edward's timestamps.
+  b. Extend **Copy analysis** to also dump what the live analyzer saw per bar (its sub level, full/empty flag, section, lock), so Edward's next pastes show where live goes wrong.
+- Likely fixes: hysteresis (a section must hold ≥ 1-2 bars before it can change again; kills the breakdown/groove flicker), and reuse the offline lessons causally (a drop needs the sub to come back after a real sub cut; a 1-2 bar dip mid-drop isn't a breakdown; a busy hook at drop loudness isn't a drop).
+
+### 2. Lights: make the "2nd build" step up
+Edward hears trap builds in two stages: a build, then a 2nd more intense build when the sub cuts out (Chicken Soup 0:36, Love Sosa 0:55 and 2:37). Sections treat it as one build, so the lights just ramp smoothly.
+- Code: `Show._build` in `jaylights/show.py` (~line 165; it uses `section_progress` for the chase speed: div 1/2/4/8, and the colour draining to white), mirrored in `web/engine.js`.
+- Idea: when `st.low` drops to near zero during a BUILD (the sub cut), jump a level: subdivisions straight to 8ths/16ths, colour to near-white, movers to a tight fan, strobes (if enabled) start ticking. Optionally mark it in the analysis (a build "stage 2" start bar) so pre-analyzed mode can hit it exactly on the bar.
+- **Safety:** Jayden is 21 months. Any new strobe/blinder use must respect `--no-strobe` / `--no-blinders` and the page's Strobes toggle.
+
+### 3. More real tracks
+Ask Edward for tracks that would trip it up, each with Copy analysis + their timestamps + the genre:
+- a **fake-out drop** (build -> silence/vocal/2nd build instead of the drop)
+- **DnB** (170+ BPM; risk: tempo read at half speed)
+- **melodic/progressive** with a long breakdown (Illenium, Seven Lions, ODESZA, Lane 8)
+- **house/tech house** with a soft drop (Fisher, Chris Lake, John Summit, Dom Dolla)
+- **dubstep half-time** drop (Excision, Subtronics, Virtual Riot)
+Workflow: save to `tests/real_tracks/<name>.txt`, map their times to bars (time = first bar + bar × bar length, both in the paste header), fix, add a `test_real_<name>` test, run the full eval (scores must not drop), check Python = JS, republish the page.
+
+## Other open items
+1. "Not Even Love" drop lands ~1 s late (1:16 vs 1:15). Chicken Soup and Love Sosa drops are now on the exact bar Edward heard, so this may be a grid offset on that one track.
+2. Live downbeat is only 0.55 (part of task 1).
+3. Get Edward's actual fixtures and dongle, write exact profiles, then run `test-rig`.
+4. Ideas: Rekordbox/Serato sync, sACN, pixel bars, haze, user-saved looks.
 
 ## Working style Edward likes
-Be a homie: casual, funny, roast a little, but keep the technical side real. Edward is on their phone a lot (Claude app). The test page has no audience any more (Edward asked); the front view button is labelled "Front". Their son Jayden is 21 months old, so keep the strobe/blinder safety notes (`--no-strobe`, `--no-blinders`).
+Be a homie: casual, funny, roast a little, but keep the technical side real. Edward is on their phone a lot (Claude app), so keep replies tight and use tables for timelines. The test page has no audience any more (Edward asked). Their son Jayden is 21 months old, so keep the strobe/blinder safety notes (`--no-strobe`, `--no-blinders`).
