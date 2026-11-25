@@ -21,12 +21,13 @@ Pure python lists and floats on purpose: web/engine.js has a line-for-line twin
 from __future__ import annotations
 
 from ..state import BREAKDOWN, BUILD, DROP, GROOVE, INTRO
-from .sections import Section
+from .sections import STAGE2_DROP, STAGE2_KICK, STAGE2_LOUDER, STAGE2_RETURN, Section
 
 FULL_WITHIN = 0.15      # full = sub within this of the running top
 EMPTY_BELOW = 0.42      # empty = sub this far under the running top (the cut)
 FLOOR = 0.35            # ...and never "full" below this, whatever the running top says
 TENSION_UP = 0.10       # tension this far over the groove's = a build is climbing
+STAGE2_HARD_CUT = 0.2   # a 1-bar cut this deep is already the 2nd build stage (Love Sosa), a shallower one is the pause
 HOLD = 2                # bars a section holds before it may change (entering DROP is exempt)
 
 
@@ -58,6 +59,7 @@ class LiveSections:
         self.slack_run = 0
         self.since_drop = 99         # bars since the last drop ended
         self.k_te_min = 9.0          # lowest tension since the breakdown began
+        self.stage2 = False          # this build has reached its 2nd, more intense stage (never changes a label)
 
     # ------------------------------------------------------------------ helpers
     def dips4(self) -> int:
@@ -70,6 +72,7 @@ class LiveSections:
     def _enter(self, kind):
         if kind != self.kind:
             self.kind = kind
+            self.stage2 = False
             if kind == BREAKDOWN:
                 self.k_te_min = min(r["tension"] for r in self.rows[-3:])   # the bars that sent us here count
             if kind == BUILD:
@@ -152,10 +155,26 @@ class LiveSections:
             self.g_te = te if self.g_te is None else 0.75 * self.g_te + 0.25 * te
             self.g_pw = p if self.g_pw is None else 0.75 * self.g_pw + 0.25 * p
             self.g_n += 1
+        if self.kind == BUILD and was == BUILD and not self.stage2:
+            self.stage2 = self._stage2_cue(low, kick, en)
         self.run = self.run + 1 if self.kind == was else 1
         self.since_drop = 0 if self.kind == DROP else self.since_drop + 1
         self.kinds.append(self.kind)
         return self.kind
+
+    def _stage2_cue(self, low, kick, en) -> bool:
+        """Causal twin of sections.stage2_bar: this bar starts the build's 2nd stage when the sub
+        cuts out (Love Sosa 0:55, 2:37) or comes back full after a 2+ bar dip (Chicken Soup 0:36).
+        A single empty bar that isn't a near-total cut is the pause before the drop (Not Even
+        Love), so that waits for a 2nd empty bar."""
+        if self.empty_run >= 2 or (self.empty_run == 1 and low < STAGE2_HARD_CUT):
+            return True
+        if len(self.rows) >= 3 and self.empty_run == 0:
+            a, b = self.rows[-3], self.rows[-2]
+            dip = max(a["low"], b["low"])
+            return (self.low_ref - dip >= STAGE2_DROP and low >= dip + STAGE2_RETURN
+                    and kick >= STAGE2_KICK and en >= b["energy"] + STAGE2_LOUDER)
+        return False
 
     # ------------------------------------------------------------------ inside a drop
     def _in_drop(self, row, full):
@@ -227,12 +246,16 @@ def simulate_live_bars(m: dict) -> list[Section]:
     n = len(m["low"])
     ls = LiveSections()
     kinds = []
+    stage2 = []
     for i in range(n):
         kinds.append(ls.push({k: float(m[k][i]) for k in ("kick", "low", "energy", "high", "tension", "density")}))
+        stage2.append(ls.stage2)
     out: list[Section] = []
     for i, k in enumerate(kinds):
         if out and out[-1].kind == k:
             out[-1].end_bar = i + 1
         else:
             out.append(Section(k, i, i + 1))
+        if k == BUILD and stage2[i] and out[-1].stage2_bar is None:
+            out[-1].stage2_bar = i
     return out

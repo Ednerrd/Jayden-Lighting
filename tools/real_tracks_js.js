@@ -21,5 +21,7 @@ for (const f of fs.readdirSync(dir).filter(f => f.endsWith(".txt")).sort()) {
     name: f,
     sections: J.labelSections(M).map(s => [s.kind, s.start, s.end]),
     live: J.simulateLiveBars(M).map(s => [s.kind, s.start, s.end]),
+    stage2: J.labelSections(M).filter(s => s.kind === "build").map(s => s.stage2),            // offline build stage-2 bars
+    live_stage2: J.simulateLiveBars(M).filter(s => s.kind === "build").map(s => s.stage2),   // causal
   }));
 }

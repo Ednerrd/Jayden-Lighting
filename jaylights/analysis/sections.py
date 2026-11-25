@@ -27,6 +27,7 @@ class Section:
     kind: str
     start_bar: int
     end_bar: int  # exclusive
+    stage2_bar: int | None = None  # BUILD only: the bar where the 2nd, more intense build stage starts
 
 
 def bar_features(feats, beat_frames: np.ndarray, downbeat_phase: int, onsets: dict[str, np.ndarray]):
@@ -147,7 +148,7 @@ def _runs(flags: np.ndarray, min_len: int = 2) -> list[list]:
     return runs
 
 
-def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
+def _label_sections(m: dict[str, np.ndarray]) -> list[Section]:
     """Label bars by whether the floor is shaking.
 
     The most reliable "is this a drop?" signal across house, dubstep, trap and DnB is
@@ -333,6 +334,50 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
     if grid is None:
         return secs
     return _snap_to_grid(_hook_builds(secs, hooks, power, grid), grid)
+
+
+# --- build stage 2 -------------------------------------------------------------------
+# Trap builds come in two stages: a build, then a more intense 2nd build. The section
+# boundaries never change; this only marks the bar where stage 2 starts. Two cues, both
+# learned from real tracks (bar features in tests/real_tracks):
+#  * the sub CUTS OUT: two bars with the sub (low) under STAGE2_CUT and well below the
+#    build's own earlier bars (Love Sosa 0:55 and 2:37: low 0.43 -> 0.09, 0.03, 0.03...).
+#    A 1-bar cut is the pause before the drop (Not Even Love 1:14, 2:28), not stage 2.
+#  * the sub DIPS for 2+ bars (thinned out, still ~0.6), then the full kick and sub come
+#    back with a jump in loudness (Chicken Soup 0:36 and 1:36: low 0.61 -> 0.92, kick 1.5,
+#    energy +0.22).
+# Stage 2 needs at least STAGE2_MIN_BARS of build before it, so short builds have none.
+STAGE2_MIN_BARS = 4
+STAGE2_CUT = 0.35        # sub level of a real cut
+STAGE2_DROP = 0.3        # ...and how far under the build's earlier bars it has to be
+STAGE2_RETURN = 0.25     # dip -> comeback: sub rises by this much
+STAGE2_KICK = 1.2        # ...with the kick pinned
+STAGE2_LOUDER = 0.15     # ...and the whole mix this much louder
+
+
+def stage2_bar(m: dict[str, np.ndarray], a: int, b: int) -> int | None:
+    """First bar of a build [a, b) where stage 2 starts, or None."""
+    low, kick, energy = m["low"], m["kick"], m["energy"]
+    for x in range(a + STAGE2_MIN_BARS, b):
+        before = low[a:x]
+        if (x + 1 < b and low[x] < STAGE2_CUT and low[x + 1] < STAGE2_CUT
+                and low[x] < before.mean() - STAGE2_DROP):
+            return x
+        # a 2-bar dip, then the comeback
+        if (before.max() - max(low[x - 2], low[x - 1]) >= STAGE2_DROP
+                and low[x] >= max(low[x - 2], low[x - 1]) + STAGE2_RETURN
+                and kick[x] >= STAGE2_KICK and energy[x] >= energy[x - 1] + STAGE2_LOUDER):
+            return x
+    return None
+
+
+def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
+    """Label the track (see _label_sections), then mark where each build's 2nd stage starts."""
+    secs = _label_sections(m)
+    for s in secs:
+        if s.kind == BUILD:
+            s.stage2_bar = stage2_bar(m, s.start_bar, s.end_bar)
+    return secs
 
 
 def _phrase_grid(secs: list[Section]):

@@ -418,6 +418,216 @@ def test_real_tracks_python_matches_js():
         # the causal live simulation (bar by bar, past only) must match too
         live = [[s.kind, s.start_bar, s.end_bar] for s in simulate_live_bars(_load_bars(r["name"]))]
         assert live == r["live"], (r["name"], live, r["live"])
+        # build stage-2 bars: offline and causal, same in both ports
+        m = _load_bars(r["name"])
+        assert [s.stage2_bar for s in label_sections(m) if s.kind == "build"] == r["stage2"], r["name"]
+        assert [s.stage2_bar for s in simulate_live_bars(m) if s.kind == "build"] == r["live_stage2"], r["name"]
+
+
+# ---------------------------------------------------------------- build stage 2 (the 2nd, more intense build)
+def _stage2_times(secs, t0, bar):
+    """[(build start s, stage-2 s or None)] for every build."""
+    return [(t0 + s.start_bar * bar, None if s.stage2_bar is None else t0 + s.stage2_bar * bar)
+            for s in secs if s.kind == "build"]
+
+
+def test_real_chicken_soup_build_stage2():
+    from jaylights.analysis.live_sections import simulate_live_bars
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 0.05, 1.791
+    m = _load_bars("chicken_soup.txt")
+    # user: build 0:28, 2nd build 0:36; second half: build 1:33, same 2nd stage 36 bars later (1:40)
+    for secs in (label_sections(m), simulate_live_bars(m)):
+        got = _stage2_times(secs, t0, bar)
+        assert len(got) == 2 and all(g[1] is not None for g in got), got
+        assert abs(got[0][1] - 36) <= bar and abs(got[1][1] - 100.3) <= bar, got
+
+
+def test_real_love_sosa_build_stage2():
+    from jaylights.analysis.live_sections import simulate_live_bars
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 1.34, 1.714
+    m = _load_bars("love_sosa.txt")
+    # user: build 0:41, 2nd build 0:55; build 2:10, 2nd build 2:37
+    got = _stage2_times(label_sections(m), t0, bar)
+    assert len(got) == 2 and abs(got[0][1] - 55) <= bar and abs(got[1][1] - 157) <= bar, got
+    live = _stage2_times(simulate_live_bars(m), t0, bar)   # causal: it can only see the cut once the sub is gone
+    assert len(live) == 2 and abs(live[0][1] - 55) <= bar and abs(live[1][1] - 157) <= bar, live
+
+
+def test_real_not_even_love_build_stage2():
+    from jaylights.analysis.live_sections import simulate_live_bars
+    from jaylights.analysis.sections import label_sections
+
+    t0, bar = 0.27, 1.846
+    m = _load_bars("not_even_love.txt")
+    for secs in (label_sections(m), simulate_live_bars(m)):
+        for s in secs:   # short builds: no 2nd stage (at most the last 2 bars before the drop)
+            if s.kind == "build" and s.stage2_bar is not None:
+                assert s.end_bar - s.stage2_bar <= 2, (s, secs)
+
+
+def test_timeline_build_stage_in_state_and_json(tmp_path):
+    audio, _ = make_track(bpm=128)
+    tl = analyze_audio(audio, SR)
+    b = next(s for s in tl.sections if s["kind"] == BUILD)
+    assert "stage2_beat" in b
+    b["stage2_beat"] = b["start_beat"] + 8     # pretend stage 2 starts two bars in
+    t_stage1 = float(tl.beats[b["start_beat"] + 4]) + 0.01
+    t_stage2 = float(tl.beats[b["start_beat"] + 9])
+    assert tl.state_at(t_stage1).build_stage == 1 and tl.state_at(t_stage2).build_stage == 2
+    assert tl.state_at(t_stage1).build_stage2_ahead and not tl.state_at(t_stage2).build_stage2_ahead
+    assert tl.state_at(0.1).build_stage == 0 or tl.state_at(0.1).section == BUILD
+    drop_t = next(s["start"] for s in tl.sections if s["kind"] == DROP)
+    assert tl.state_at(drop_t + 0.5).build_stage == 0          # only builds have a stage
+    path = tmp_path / "t.json"
+    tl.save(str(path))
+    from jaylights.analysis.offline import Timeline
+    assert Timeline.load(str(path)).state_at(t_stage2).build_stage == 2
+
+
+def test_live_analyzer_reports_build_stage():
+    audio, _ = make_track(bpm=128)
+    la = LiveAnalyzer(SR, (90.0, 190.0), 0.0)
+    seen = set()
+    for i in range(0, len(audio), 512):
+        la.push(audio[i:i + 512])
+        st = la.state
+        assert (st.build_stage in (1, 2)) == (st.section == BUILD)
+        seen.add(st.build_stage)
+    assert 1 in seen
+
+
+def _build_state(**kw):
+    from jaylights.state import MusicState
+    d = dict(section="build", section_index=3, section_progress=0.55, section_beats=20.0, bpm=140.0, build_stage=1,
+             next_section=DROP, beats_to_next=20.0, energy=0.7, low=0.5, mid=0.5, high=0.7)
+    d.update(kw)
+    return MusicState(**d)
+
+
+def _build_frames(stage, ctl, genre="trap", beats=8.0, **kw):
+    """Render a build for `beats` beats at 30 fps through one engine; returns [(state, [FixtureState])]."""
+    eng = ShowEngine(load_rig(None).fixtures, genre)
+    out = []
+    for k in range(int(beats / 140 * 60 * 30)):
+        beat = 100 + k * 140 / 60 / 30
+        st = _build_state(build_stage=stage, beat=beat, beat_in_bar=beat % 4, bar=int(beat // 4), **kw)
+        out.append((st, eng.render(st, ctl)))
+    return out
+
+
+def test_build_stage2_steps_up_with_strobes_on():
+    ctl = Controls()
+    kinds = [f.kind for f in load_rig(None).fixtures]
+    s1, s2 = _build_frames(1, ctl), _build_frames(2, ctl)
+
+    def stats(frames):
+        pars = [[fs[i].intensity for i, k in enumerate(kinds) if k == "wash"] for _, fs in frames]
+        white = [min(fs[i].r, fs[i].g, fs[i].b) for _, fs in frames for i, k in enumerate(kinds) if k == "wash"]
+        return np.mean(pars), np.min(pars), np.mean(white)
+    m1, lo1, w1 = stats(s1)
+    m2, lo2, w2 = stats(s2)
+    assert m2 > m1 + 0.15 and lo2 >= 0.55 and lo1 < 0.3, (m1, lo1, m2, lo2)   # pars: brighter and never dark
+    assert w2 > w1 + 0.2 and w2 > 0.85, (w1, w2)                              # colour: near-white
+    mv = [i for i, k in enumerate(kinds) if k == "mover"]
+    assert all(fs[i].intensity == 1.0 for _, fs in s2 for i in mv)
+    assert any(fs[i].strobe_hz > 0 for _, fs in s2 for i, k in enumerate(kinds) if k == "strobe")   # strobes tick
+    assert all(fs[i].strobe_hz <= ctl.max_strobe_hz for _, fs in s2 for i in range(len(kinds)))
+
+
+def test_single_stage_build_keeps_the_full_ramp_and_two_stage_build_is_capped():
+    ctl = Controls()
+    kinds = [f.kind for f in load_rig(None).fixtures]
+    wash = [i for i, k in enumerate(kinds) if k == "wash"]
+
+    def look(**kw):
+        fr = _build_frames(1, ctl, section_progress=0.95, beats_to_next=20.0, beats=4.0, **kw)
+        return (np.mean([min(fs[i].r, fs[i].g, fs[i].b) for _, fs in fr for i in wash]),
+                np.mean([fs[i].intensity for _, fs in fr for i in wash]))
+    w_single, i_single = look()                              # no stage 2 ahead: the original ramp at p = 0.95
+    assert w_single == pytest.approx(0.95 ** 1.5, abs=0.02)  # colour ~93% white, as before this change
+    # chase speed is limited by the strobe-rate cap (10 Hz at 140 BPM = 16ths, never 32nds): the washes still gate
+    # dark between subdivisions and peak high, but never flash faster than the cap
+    fr = _build_frames(1, ctl, section_progress=0.95, beats=4.0)
+    vals = [fs[wash[0]].intensity for _, fs in fr]
+    assert min(vals) < 0.1 and max(vals) > 0.9
+    flashes = sum(1 for x, y in zip(vals, vals[1:]) if y > x + 0.3)   # rising edges
+    assert flashes / (4.0 * 60 / 140) <= ctl.max_strobe_hz + 0.5, flashes
+    w_cap, _ = look(build_stage2_ahead=True)                 # a stage 2 is coming: stage 1 tops out at 0.74
+    assert w_cap == pytest.approx(0.74 ** 1.5, abs=0.02) and w_cap < w_single - 0.2
+    w2 = np.mean([min(fs[i].r, fs[i].g, fs[i].b) for _, fs in _build_frames(2, ctl, section_progress=0.95) for i in wash])
+    assert w2 > 0.9 > w_cap + 0.2                            # stage 2 jumps past the capped stage 1
+
+
+def test_build_stage2_with_strobes_off_has_no_strobe_output_but_still_steps_up():
+    kinds = [f.kind for f in load_rig(None).fixtures]
+    for ctl in (Controls(strobe_enabled=False), Controls(strobe_enabled=False, blinders=False)):
+        s1, s2 = _build_frames(1, ctl), _build_frames(2, ctl)
+        for _, fs in s2:
+            for i, k in enumerate(kinds):
+                assert fs[i].strobe_hz == 0
+                if k == "strobe":
+                    assert fs[i].intensity == 0, "no strobe output when strobes are off"
+                if k == "blinder" and not ctl.blinders:
+                    assert fs[i].intensity == 0
+        # still obviously a step up from pars / movers / colour alone, and no fast wash flashing (cap 2 Hz)
+        par = lambda frames: np.mean([fs[i].intensity for _, fs in frames for i, k in enumerate(kinds) if k == "wash"])
+        white = lambda frames: np.mean([min(fs[i].r, fs[i].g, fs[i].b) for _, fs in frames for i, k in enumerate(kinds) if k == "wash"])
+        assert par(s2) > par(s1) + 0.15 and white(s2) > white(s1) + 0.2
+    # the blinders flag alone must not touch the washes' step: blinders stay dark through stage 2 anyway
+    assert all(fs[i].intensity == 0 for _, fs in _build_frames(2, Controls(blinders=False)) for i, k in enumerate(kinds) if k == "blinder")
+
+
+def test_build_stage2_fallback_blackout_and_flag_absent():
+    ctl = Controls()
+    eng = ShowEngine(load_rig(None).fixtures, "trap")
+    # the breath before a KNOWN drop still goes fully dark, stage 2 or not
+    st = _build_state(build_stage=2, beat=100.0, beats_to_next=0.5)
+    assert all(s.intensity == 0 for s in eng.render(st, ctl))
+    # flag absent (build_stage 0) + sub gone = stage 2; sub present = stage 1
+    kinds = [f.kind for f in load_rig(None).fixtures]
+    def par_mean(**kw):
+        e = ShowEngine(load_rig(None).fixtures, "trap")
+        fr = [e.render(_build_state(beat=100 + k * 0.1, beat_in_bar=(100 + k * 0.1) % 4, **kw), ctl) for k in range(40)]
+        return np.mean([fs[i].intensity for fs in fr for i, k in enumerate(kinds) if k == "wash"])
+    assert par_mean(build_stage=0, low=0.02) == pytest.approx(par_mean(build_stage=2, low=0.02))
+    assert par_mean(build_stage=0, low=0.8) == pytest.approx(par_mean(build_stage=1, low=0.8))
+    assert par_mean(build_stage=2) > par_mean(build_stage=1) + 0.1
+
+
+def test_show_python_matches_js_on_builds(tmp_path):
+    import json
+    import shutil
+    import subprocess
+
+    if not shutil.which("node"):
+        pytest.skip("node not installed")
+    fixtures = load_rig(None).fixtures
+    d = {"fixtures": [dict(kind=f.kind, index=f.index, group_size=f.group_size, x=f.x, pan_center=f.pan_center, tilt_center=f.tilt_center,
+                           pan_span=f.pan_span, tilt_span=f.tilt_span, tilt_up=f.tilt_up) for f in fixtures], "genre": "trap"}
+    states = []
+    for stage, ahead in ((1, False), (1, True), (2, False), (0, False)):
+        for k in range(60):
+            beat = 100 + k * 0.2
+            st = _build_state(build_stage=stage, beat=beat, beat_in_bar=beat % 4, bar=int(beat // 4), low=0.05 if stage == 0 else 0.5,
+                              beats_to_next=20.0 - k * 0.2, snare=0.3 if k % 5 == 0 else 0.0, kick=0.5,
+                              build_stage2_ahead=ahead, section_progress=0.2 + k * 0.013)
+            states.append(st)
+    root = _os.path.dirname(_os.path.dirname(__file__))
+    for ctl in (Controls(), Controls(strobe_enabled=False, blinders=False)):
+        d["ctl"] = {"maxStrobe": ctl.max_strobe_hz, "strobeEnabled": ctl.strobe_enabled, "blinders": ctl.blinders, "dropStyle": "auto"}
+        d["states"] = [s.to_dict() for s in states]
+        path = tmp_path / "show.json"
+        path.write_text(json.dumps(d))
+        js = json.loads(subprocess.run(["node", _os.path.join(root, "tools", "show_js.js"), str(path)], capture_output=True, text=True, check=True).stdout)
+        eng = ShowEngine(fixtures, "trap")
+        for st, jf in zip(states, js):
+            for fs, jv in zip(eng.render(st, ctl), jf):
+                py = [fs.intensity, fs.r, fs.g, fs.b, fs.strobe_hz, fs.pan, fs.tilt]
+                assert py == pytest.approx(jv, abs=1e-6), (st.build_stage, py, jv)
 
 
 def test_load_bars_ignores_header_and_live_trace_lines(tmp_path):

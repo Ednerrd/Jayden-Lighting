@@ -31,6 +31,8 @@ class MusicState:
     section_index: int = 0         # increments every time the section changes
     section_beats: float = 0.0     # beats since this section started
     section_progress: float = 0.0  # 0..1 through the section (builds: how close the drop is)
+    build_stage: int = 0           # inside a BUILD: 1 = first stage, 2 = the more intense 2nd build (the sub cut out); 0 elsewhere
+    build_stage2_ahead: bool = False  # pre-analyzed only: this build has a stage 2 still to come (stage 1 then tops out lower)
     next_section: str | None = None
     beats_to_next: float | None = None   # known in pre-analyzed mode only
     energy: float = 0.0            # overall loudness 0..1 (relative to the track)

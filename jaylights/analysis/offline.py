@@ -147,6 +147,10 @@ class Timeline:
             st.section_beats = beat - sec["start_beat"]
             length = max(1e-6, sec["end_beat"] - sec["start_beat"])
             st.section_progress = float(np.clip(st.section_beats / length, 0, 1))
+            if sec["kind"] == BUILD:
+                s2 = sec.get("stage2_beat")
+                st.build_stage = 2 if s2 is not None and beat >= s2 else 1
+                st.build_stage2_ahead = s2 is not None and beat < s2
             if si + 1 < len(self.sections):
                 st.next_section = self.sections[si + 1]["kind"]
                 st.beats_to_next = sec["end_beat"] - beat
@@ -200,12 +204,16 @@ def analyze_audio(audio: np.ndarray, sr: int, bpm_range=(90.0, 190.0), source: s
         eb = int(bar_starts[s.end_bar]) if s.end_bar < len(bar_starts) else len(beat_times) - 1
         if s.start_bar == 0:
             sb = 0  # include any pickup beats in the first section
+        stage2 = None  # BUILD only: where its 2nd, more intense stage starts (beat index, like start_beat)
+        if s.stage2_bar is not None and s.stage2_bar < len(bar_starts):
+            stage2 = int(bar_starts[s.stage2_bar])
         sections.append({
             "kind": s.kind,
             "start": round(float(beat_times[sb]) if sb > 0 else 0.0, 4),
             "end": round(float(beat_times[eb]) if eb < len(beat_times) - 1 else duration, 4),
             "start_beat": sb if sb > 0 else 0,
             "end_beat": eb,
+            "stage2_beat": stage2,
         })
 
     dec = slice(None, None, ENV_DECIM)

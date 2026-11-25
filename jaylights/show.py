@@ -32,6 +32,7 @@ from .fixtures import BLINDER, BLINDER_COLOR, DIMMER, MOVER, STROBE, WASH, Fixtu
 from .state import BREAKDOWN, BUILD, DROP, INTRO, OUTRO, MusicState
 
 WHITE = (1.0, 1.0, 1.0)
+STAGE1_TOP = 0.74   # a build with a stage 2 to come ramps up to here (16th-note chase, ~65% white) until stage 2 jumps past it
 
 # hue sets (degrees). Each palette is a list of colours the looks pick from.
 PALETTES = {
@@ -94,6 +95,7 @@ class ShowEngine:
         self._first = True
         self._style = "pump"
         self._hz_cap = 10.0
+        self._strobes_on = True
 
     # ------------------------------------------------------------------
     def _pick_palette(self, kind: str):
@@ -116,6 +118,7 @@ class ShowEngine:
             if st.section != BUILD:  # builds keep the previous colours and drain them to white
                 self._pick_palette(st.section)
         self._hz_cap = ctl.max_strobe_hz if ctl.strobe_enabled else 2.0   # wash flashing obeys the strobe safety too
+        self._strobes_on = ctl.strobe_enabled
         if st.section == DROP:
             self._style = self.drop_style_at(st.section_beats, ctl.drop_style)
         out = [FixtureState(pan=f.pan_center, tilt=f.tilt_center) for f in self.fixtures]
@@ -173,7 +176,15 @@ class ShowEngine:
                 # last bar before a KNOWN drop: blinders swell 0 -> 0.5, then go dark for the final beat
                 fs.intensity = 0.5 * (4.0 - st.beats_to_next) / 3.0
                 return
+        if self._stage2(st):
+            self._build2(st, f, fs, p)
+            return
+        # a build with a stage 2 still to come (pre-analyzed only) tops out at p = STAGE1_TOP, short of the
+        # stage-2 look, so the step up is obvious. Every other build keeps the full ramp.
+        if st.build_stage2_ahead:
+            p = min(p, STAGE1_TOP)
         div = 1 if p < 0.25 else 2 if p < 0.5 else 4 if p < 0.75 else 8
+        div = self._flash_div(st, div)       # chase flashing always obeys the strobe-rate cap (2 Hz with strobes off)
         color = mix(self.palette[0], WHITE, p ** 1.5)
         sub = st.beat * div
         gate = 1.0 - (sub % 1.0)            # sharp attack, decays until the next subdivision
@@ -199,6 +210,37 @@ class ShowEngine:
                 fs.strobe_hz = st.bpm / 60 * div
             else:
                 fs.intensity = 0.6 * st.snare * p
+
+    @staticmethod
+    def _stage2(st: MusicState) -> bool:
+        """The 2nd, more intense build stage (the sub cut out). Analysis marks it (build_stage 2); a state
+        that doesn't say (build_stage 0) falls back to "the sub is gone"."""
+        return st.build_stage == 2 or (st.build_stage == 0 and st.low < 0.1)
+
+    def _build2(self, st: MusicState, f: Fixture, fs: FixtureState, p: float):
+        """Stage 2 JUMPS a level (no ramp): near-white, every par bright and never fully dark, the fastest
+        chase the strobe cap allows, movers in a tight fast fan aimed up. Strobes tick only when strobes are
+        enabled; with them off the step is carried by pars, movers and colour alone."""
+        div = self._flash_div(st, 8)
+        gate = 1.0 - ((st.beat * div) % 1.0)
+        white = mix(self.palette[0], WHITE, 0.92)
+        if f.kind in (WASH, DIMMER):
+            fs.set_color(white)
+            fs.intensity = max(0.6 + 0.4 * gate, st.snare)
+        elif f.kind == MOVER:
+            fs.set_color(white)
+            fs.intensity = 1.0
+            n = max(1, f.group_size)
+            # tight fan (narrow, spread across the group), swept fast: one cycle per beat
+            self._move(f, fs, 0.3 * math.sin(2 * math.pi * (st.beat + f.index / n)), 1.0)
+        elif f.kind == STROBE:
+            if self._strobes_on:
+                fs.set_color(WHITE)
+                fs.intensity = 0.7 * self.strobe_amt
+                fs.strobe_hz = st.bpm / 60 * div
+            else:
+                fs.intensity = 0.0
+                fs.strobe_hz = 0.0
 
     def _drop(self, st: MusicState, f: Fixture, fs: FixtureState):
         sb = st.section_beats

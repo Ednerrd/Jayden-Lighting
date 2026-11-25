@@ -511,6 +511,7 @@ class LiveAnalyzer:
             st.section_progress = float(min(0.98, 0.5 * st.section_beats / 32 + 0.5 * tension))
         else:
             st.section_progress = float(min(1.0, st.section_beats / 64))
+        st.build_stage = (2 if self.sections.stage2 else 1) if self.section == BUILD else 0
         st.next_section = None
         st.beats_to_next = None
         st.locked = self.locked

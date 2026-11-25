@@ -318,7 +318,7 @@
     }
     return runs;
   }
-  function labelSections(M) {
+  function labelSectionsRaw(M) {
     const low = M.low, n = low.length; if (!n) return [];
     const p90 = percentile(low, 90), p10 = percentile(low, 10), thr = p90 - p10 > 0.15 ? p90 - 0.15 : null;
     const full = Array.from(low, v => thr !== null ? v > thr : true);
@@ -437,6 +437,25 @@
 
   // Which bar (mod 4) phrases start on, from the drops (the most reliable boundaries). Only
   // when every drop agrees: if they don't, one of them is off and the grid can't be trusted.
+  // ---- build stage 2 (twin of sections.py stage2_bar): the bar where a build's 2nd, more intense stage starts.
+  // Two cues, learned from real tracks: the sub CUTS OUT for 2+ bars well under the build's earlier bars (Love Sosa 0:55,
+  // 2:37), or the sub DIPS for 2+ bars then the full kick and sub come back with a jump in loudness (Chicken Soup 0:36).
+  const STAGE2_MIN_BARS = 4, STAGE2_CUT = 0.35, STAGE2_DROP = 0.3, STAGE2_RETURN = 0.25, STAGE2_KICK = 1.2, STAGE2_LOUDER = 0.15;
+  function stage2Bar(M, a, b) {
+    const low = M.low;
+    for (let x = a + STAGE2_MIN_BARS; x < b; x++) {
+      const before = low.slice(a, x), mean = meanOf(before), top = Math.max(...before);
+      if (x + 1 < b && low[x] < STAGE2_CUT && low[x + 1] < STAGE2_CUT && low[x] < mean - STAGE2_DROP) return x;
+      const dip = Math.max(low[x - 2], low[x - 1]);
+      if (top - dip >= STAGE2_DROP && low[x] >= dip + STAGE2_RETURN && M.kick[x] >= STAGE2_KICK && M.energy[x] >= M.energy[x - 1] + STAGE2_LOUDER) return x;
+    }
+    return null;
+  }
+  function labelSections(M) {
+    const secs = labelSectionsRaw(M);
+    for (const s of secs) s.stage2 = s.kind === BUILD ? stage2Bar(M, s.start, s.end) : null;
+    return secs;
+  }
   function phraseGrid(secs) {
     const starts = new Set(secs.filter(s => s.kind === DROP).map(s => mod(s.start, PHRASE)));
     return starts.size === 1 ? [...starts][0] : null;
@@ -557,7 +576,8 @@
       let sb = s.start < barStarts.length ? barStarts[s.start] : beats.length - 1;
       const eb = s.end < barStarts.length ? barStarts[s.end] : beats.length - 1;
       if (s.start === 0) sb = 0;
-      return { kind: s.kind, start: sb > 0 ? beats[sb] : 0, end: eb < beats.length - 1 ? beats[eb] : duration, start_beat: sb > 0 ? sb : 0, end_beat: eb };
+      const stage2 = s.stage2 !== null && s.stage2 !== undefined && s.stage2 < barStarts.length ? barStarts[s.stage2] : null;
+      return { kind: s.kind, start: sb > 0 ? beats[sb] : 0, end: eb < beats.length - 1 ? beats[eb] : duration, start_beat: sb > 0 ? sb : 0, end_beat: eb, stage2_beat: stage2 };
     });
     const dec = a => { const o = []; for (let i = 0; i < a.length; i += ENV_DECIM) o.push(a[i]); return o; };
     const curves = {
@@ -598,6 +618,7 @@
         const si = Math.max(0, searchRight(this.secStarts, t) - 1), s = this.sections[si];
         st.section = s.kind; st.section_index = si; st.section_beats = beat - s.start_beat;
         st.section_progress = clamp(st.section_beats / Math.max(1e-6, s.end_beat - s.start_beat), 0, 1);
+        if (s.kind === BUILD) { const has = s.stage2_beat !== null && s.stage2_beat !== undefined; st.build_stage = has && beat >= s.stage2_beat ? 2 : 1; st.build_stage2_ahead = has && beat < s.stage2_beat; }
         if (si + 1 < this.sections.length) { st.next_section = this.sections[si + 1].kind; st.beats_to_next = s.end_beat - beat; }
       }
       for (const k of ["energy", "low", "mid", "high"]) st[k] = this.curve(k, t);
@@ -606,7 +627,7 @@
     }
   }
   function newState() {
-    return { t: 0, bpm: 128, beat: 0, beat_in_bar: 0, bar: 0, section: GROOVE, section_index: 0, section_beats: 0, section_progress: 0,
+    return { t: 0, bpm: 128, beat: 0, beat_in_bar: 0, bar: 0, section: GROOVE, section_index: 0, section_beats: 0, section_progress: 0, build_stage: 0, build_stage2_ahead: false,
       next_section: null, beats_to_next: null, energy: 0, low: 0, mid: 0, high: 0, kick: 0, snare: 0, hat: 0, locked: true };
   }
 
@@ -640,20 +661,20 @@
   function median(a) { const s = Float64Array.from(a).sort(), n = s.length; return n % 2 ? s[(n - 1) >> 1] : (s[n / 2 - 1] + s[n / 2]) / 2; }
 
   // ---------------------------------------------------------------- live section machine (twin of analysis/live_sections.py)
-  const LS_FULL_WITHIN = 0.15, LS_EMPTY_BELOW = 0.42, LS_FLOOR = 0.35, LS_TENSION_UP = 0.10, LS_HOLD = 2;
+  const LS_FULL_WITHIN = 0.15, LS_EMPTY_BELOW = 0.42, LS_FLOOR = 0.35, LS_TENSION_UP = 0.10, LS_HOLD = 2, LS_STAGE2_HARD_CUT = 0.2;
   const meanOf = xs => xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : 0;
   class LiveSections {
     constructor() {
       this.kind = INTRO; this.run = 0; this.rows = []; this.kinds = []; this.full = []; this.power = [];
       this.lowRef = 0; this.pwRef = 0; this.gTe = null; this.gN = 0; this.gPw = null;
       this.emptyRun = 0; this.fullRun = 0; this.dipRun = 0; this.buildCut = 0; this.curCut = 0;
-      this.dropRef = null; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; this.sinceDrop = 99; this.kTeMin = 9;
+      this.dropRef = null; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; this.sinceDrop = 99; this.kTeMin = 9; this.stage2 = false;
     }
     dips4() { let n = 0; for (const f of this.full.slice(-4)) if (!f) n++; return n; }
     teUp(te) { return this.gN >= 8 && this.gTe !== null && te >= this.gTe + LS_TENSION_UP; }
     enter(kind) {
       if (kind === this.kind) return;
-      this.kind = kind;
+      this.kind = kind; this.stage2 = false;
       if (kind === BREAKDOWN) this.kTeMin = Math.min(...this.rows.slice(-3).map(r => r.tension));
       if (kind === BUILD) this.buildCut = this.curCut;
       if (kind === DROP) { this.dropRef = [0, 0, 0]; this.dropN = 0; this.sagRun = 0; this.slackRun = 0; }
@@ -695,10 +716,20 @@
         this.gPw = this.gPw === null ? p : 0.75 * this.gPw + 0.25 * p;
         this.gN++;
       }
+      if (this.kind === BUILD && was === BUILD && !this.stage2) this.stage2 = this.stage2Cue(low, kick, en);
       this.run = this.kind === was ? this.run + 1 : 1;
       this.sinceDrop = this.kind === DROP ? 0 : this.sinceDrop + 1;
       this.kinds.push(this.kind);
       return this.kind;
+    }
+    // causal twin of stage2Bar: the sub cuts out, or comes back full after a 2+ bar dip. A single shallow empty bar is the pause.
+    stage2Cue(low, kick, en) {
+      if (this.emptyRun >= 2 || (this.emptyRun === 1 && low < LS_STAGE2_HARD_CUT)) return true;
+      if (this.rows.length >= 3 && this.emptyRun === 0) {
+        const a = this.rows[this.rows.length - 3], b = this.rows[this.rows.length - 2], dip = Math.max(a.low, b.low);
+        return this.lowRef - dip >= STAGE2_DROP && low >= dip + STAGE2_RETURN && kick >= STAGE2_KICK && en >= b.energy + STAGE2_LOUDER;
+      }
+      return false;
     }
     inDrop(row) {
       if (this.dropN < 4) { this.dropRef[0] += row.low; this.dropRef[1] += row.energy; this.dropRef[2] += row.tension; this.dropN++; }
@@ -735,10 +766,13 @@
   }
   // push a track's per-bar features through LiveSections one bar at a time -> [kind, start, end] sections
   function simulateLiveBars(M) {
-    const n = M.low.length, ls = new LiveSections(), kinds = [];
-    for (let i = 0; i < n; i++) kinds.push(ls.push({ kick: M.kick[i], low: M.low[i], energy: M.energy[i], high: M.high[i], tension: M.tension[i], density: M.density[i] }));
+    const n = M.low.length, ls = new LiveSections(), kinds = [], stage2 = [];
+    for (let i = 0; i < n; i++) { kinds.push(ls.push({ kick: M.kick[i], low: M.low[i], energy: M.energy[i], high: M.high[i], tension: M.tension[i], density: M.density[i] })); stage2.push(ls.stage2); }
     const out = [];
-    kinds.forEach((k, i) => { if (out.length && out[out.length - 1].kind === k) out[out.length - 1].end = i + 1; else out.push({ kind: k, start: i, end: i + 1 }); });
+    kinds.forEach((k, i) => {
+      if (out.length && out[out.length - 1].kind === k) out[out.length - 1].end = i + 1; else out.push({ kind: k, start: i, end: i + 1, stage2: null });
+      if (k === BUILD && stage2[i] && out[out.length - 1].stage2 === null) out[out.length - 1].stage2 = i;
+    });
     return out;
   }
 
@@ -950,6 +984,7 @@
       const st = this.st, beat = this.bAt(this.latency), rel = beat - this.downbeat;
       st.t = this.frame / this.fr; st.bpm = this.bpm; st.beat = beat; st.beat_in_bar = mod(rel, 4); st.bar = Math.floor(rel / 4);
       st.section = this.section; st.section_index = this.sectionIndex; st.section_beats = beat - this.sectionStart;
+      st.build_stage = this.section === BUILD ? (this.sections.stage2 ? 2 : 1) : 0;
       if (this.section === BUILD) { const tn = this.hist.length ? this.hist[this.hist.length - 1].tension : 0; st.section_progress = Math.min(0.98, 0.5 * st.section_beats / 32 + 0.5 * tn); }
       else st.section_progress = Math.min(1, st.section_beats / 64);
       st.next_section = null; st.beats_to_next = null; st.locked = this.locked;
@@ -1008,9 +1043,10 @@
     }
     return fx;
   }
+  const STAGE1_TOP = 0.74;   // builds ramp up to here (16th-note chase, ~65% white) until stage 2 jumps past it
   class ShowEngine {
     constructor(fixtures, genre = "auto", seed = 1) {
-      this.fx = fixtures; this.genre = GENRES[genre] ? genre : "auto"; const g = GENRES[this.genre]; this.style = "pump"; this.hzCap = 10;
+      this.fx = fixtures; this.genre = GENRES[genre] ? genre : "auto"; const g = GENRES[this.genre]; this.style = "pump"; this.hzCap = 10; this.strobesOn = true;
       [, this.dropPal, this.calmPal, this.strobeAmt, this.snareAmt] = g;
       let s = seed >>> 0; this.rand = () => { s = (s + 0x6D2B79F5) >>> 0; let t = s; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
       this.secIdx = -1; this.palette = [hsv(0), hsv(240)]; this.smooth = fixtures.map(() => ({ pan: 0.5, tilt: 0.5 })); this.first = true;
@@ -1026,6 +1062,7 @@
     }
     render(st, ctl) {
       this.hzCap = ctl.strobeEnabled === false ? 2 : ctl.maxStrobe;   // wash flashing obeys the strobe safety too
+      this.strobesOn = ctl.strobeEnabled !== false;
       if (st.section === DROP) this.style = this.dropStyleAt(st.section_beats, ctl.dropStyle);
       if (st.section_index !== this.secIdx) { this.secIdx = st.section_index; if (st.section !== BUILD) this.pick(st.section); }
       const out = this.fx.map(f => ({ i: 0, c: [1, 1, 1], hz: 0, pan: f.pan_center, tilt: f.tilt_center }));
@@ -1049,10 +1086,13 @@
       else o.i = 0;
     }
     build(st, f, o) {
-      const p = st.section_progress;
+      let p = st.section_progress;
       if (st.next_section === DROP && st.beats_to_next !== null && st.beats_to_next <= 1) { o.i = 0; this.move(f, o, 0, 1); return; }
       if (st.next_section === DROP && st.beats_to_next !== null && f.kind === "blinder" && st.beats_to_next <= 4) { o.i = 0.5 * (4 - st.beats_to_next) / 3; return; }   // last bar swell
-      const div = p < 0.25 ? 1 : p < 0.5 ? 2 : p < 0.75 ? 4 : 8, color = mix(this.palette[0], WHITE, Math.pow(p, 1.5)), sub = st.beat * div, gate = 1 - mod(sub, 1);
+      if (this.stage2(st)) { this.build2(st, f, o); return; }
+      if (st.build_stage2_ahead) p = Math.min(p, STAGE1_TOP);   // a stage 2 is still to come: stage 1 tops out short of its look. Other builds keep the full ramp
+      let div = p < 0.25 ? 1 : p < 0.5 ? 2 : p < 0.75 ? 4 : 8; div = this.flashDiv(st, div);   // chase flashing always obeys the strobe-rate cap (2 Hz with strobes off)
+      const color = mix(this.palette[0], WHITE, Math.pow(p, 1.5)), sub = st.beat * div, gate = 1 - mod(sub, 1);
       if (f.kind === "wash") {
         o.c = color;
         if (p < 0.5) { const lit = mod(Math.floor(sub), Math.max(1, f.group_size)); o.i = (0.35 + 0.65 * p) * (lit === f.index ? 1 : 0.15) * (0.4 + 0.6 * gate); }
@@ -1063,6 +1103,18 @@
         this.move(f, o, Math.sin(2 * Math.PI * (st.beat / 8 * sp + f.index * 0.25)) * (1 - p), 0.3 + 0.7 * p);
       } else if (f.kind === "strobe") {
         if (p > 0.6) { o.i = (p - 0.6) / 0.4 * this.strobeAmt; o.hz = st.bpm / 60 * div; } else o.i = 0.6 * st.snare * p;
+      }
+    }
+    // the 2nd, more intense build stage (the sub cut out). Analysis marks it (build_stage 2); a state that doesn't say falls back to "the sub is gone"
+    stage2(st) { return st.build_stage === 2 || ((st.build_stage === 0 || st.build_stage === undefined) && st.low < 0.1); }
+    // stage 2 JUMPS a level (no ramp): near-white, every par bright and never fully dark, the fastest chase the strobe cap allows, movers in a
+    // tight fast fan aimed up. Strobes tick only when strobes are enabled; with them off the step is carried by pars, movers and colour alone.
+    build2(st, f, o) {
+      const div = this.flashDiv(st, 8), gate = 1 - mod(st.beat * div, 1), white = mix(this.palette[0], WHITE, 0.92);
+      if (f.kind === "wash") { o.c = white; o.i = Math.max(0.6 + 0.4 * gate, st.snare); }
+      else if (f.kind === "mover") { o.c = white; o.i = 1; const n = Math.max(1, f.group_size); this.move(f, o, 0.3 * Math.sin(2 * Math.PI * (st.beat + f.index / n)), 1); }
+      else if (f.kind === "strobe") {
+        if (this.strobesOn) { o.c = WHITE; o.i = 0.7 * this.strobeAmt; o.hz = st.bpm / 60 * div; } else { o.i = 0; o.hz = 0; }
       }
     }
     drop(st, f, o) {
@@ -1159,6 +1211,7 @@
         if (this.first) { sm.pan = o.pan; sm.tilt = o.tilt; }
         sm.pan += (o.pan - sm.pan) * a; sm.tilt += (o.tilt - sm.tilt) * a;
         o.pan = clamp(sm.pan, 0, 1); o.tilt = clamp(sm.tilt, 0, 1);
+        if (ctl.strobeEnabled === false) { o.hz = 0; if (f.kind === "strobe") o.i *= 0.3; }   // strobes off: no flashing, strobe fixtures nearly dark
         o.hz = Math.min(o.hz, ctl.maxStrobe);
         if (f.kind === "blinder") { o.c = BLINDER_COLOR; o.hz = 0; if (ctl.blinders === false) o.i = 0; }
         o.i = ctl.blackout ? 0 : clamp(o.i, 0, 1) * (ctl.master === undefined ? 1 : ctl.master);
@@ -1189,7 +1242,7 @@
     [st.section_progress, st.kick, st.snare, st.hat, st.low, st.mid, st.high, st.energy].forEach((v, q) => stOut[so + 4 + q] = Math.round(clamp(v, 0, 1) * 255));
     stOut[so + 12] = st.locked ? 1 : 0;
   }
-  const STATE_KEYS = ["bpm", "beat", "beat_in_bar", "bar", "section_index", "section_beats", "section_progress", "beats_to_next", "energy", "low", "mid", "high", "kick", "snare", "hat"];
+  const STATE_KEYS = ["build_stage", "build_stage2_ahead", "bpm", "beat", "beat_in_bar", "bar", "section_index", "section_beats", "section_progress", "beats_to_next", "energy", "low", "mid", "high", "kick", "snare", "hat"];
   function snapshot(st) {   // a plain copy of the music state (what the show engine reads)
     const o = { section: st.section, next_section: st.next_section, locked: st.locked };
     for (const k of STATE_KEYS) o[k] = st[k]; return o;

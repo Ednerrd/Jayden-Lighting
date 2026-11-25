@@ -5,7 +5,7 @@ Context for the next session picking this project up.
 ## The project
 Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop foreman at a production company, lives in SF and is on Windows. They play house, dubstep, trap, progressive and so on, for fun. The software listens to music, finds beats and sections (intro, groove, breakdown, build, **drop**, outro), and drives DMX lights.
 
-- **Branch:** `claude/jaylights-handoff-wuia4d`. Everything is committed and pushed. No PR has been opened.
+- **Branch:** `claude/pensive-ptolemy-mojn9s` (continues `claude/jaylights-handoff-wuia4d`). Everything is committed and pushed. No PR has been opened.
 - **Browser test page:** https://claude.ai/artifact/TuE4DvjziUAr8DNTuH1uyE
   - It is published from the files in `web/` plus the demo assets built by `python web/build_demo.py <dir>`.
   - It has three demo tracks (clean house 126, plus realistic dubstep 140 and trap 140), and you can drop in your own track, which is analyzed in the browser.
@@ -27,7 +27,7 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 | `web/engine.js` | **JS port of all of the above.** It must stay identical to the Python; `tools/eval_analysis.py` checks this. |
 | `web/index.html` | Test page (Front 3D view, Side view, lanes, Copy analysis) |
 | `tools/stress_synth.py`, `tools/eval_analysis.py` | 24-track realistic synthetic suite and harness. Run `python tools/eval_analysis.py --ranges auto --jobs 4` (about 4 minutes; `--no-live` is faster). |
-| `tests/` | pytest suite (76 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
+| `tests/` | pytest suite (91 tests) plus `tests/real_tracks/`, which holds real songs pasted from Copy analysis (Not Even Love, Chicken Soup, Love Sosa) |
 
 ## Section rules (sections.py) that came from real tracks
 - A bar is **full** if its sub level (kick band, 35–120 Hz) is above p90 − 0.15. The kick detector alone gets fooled by 808s, wobble bass and limiting.
@@ -48,10 +48,13 @@ Automatic EDM light shows for **Edward's home DJ setup**. Edward is the shop for
 - **Live (Python):** tempo 100%, beat F 0.92, downbeat 0.58, drop recall 78%, 0.25 false drops per track, build recall 84%, 0.21 false builds per track (was 71% / 0.42 / 1.62 before LiveSections).
 - **Live on real tracks (bar sim):** all 6 heard drops called within a bar, no false drops, 8-9 sections per track. Builds come late (live can't see ahead). Known miss: Not Even Love's 3rd drop (3:14), its sub only dips to 0.45 vs the 0.46 cut.
 
-## ▶ NEXT TASK: ask Edward which of these three to do first
-Edward asked for these three to be the next task. Start the new chat by asking which one they want (they may say "all"). Recommend 1 if they don't care.
+## ▶ NEXT TASK
+Edward picked "all, 1 → 2 → 3". **1 and 2 are DONE** (see the notes under each). **Next up: 3, more real tracks.** Ask Edward to run each track in Live mode before hitting Copy analysis, so the paste carries the new `live_*` trace too.
 
-### 1. Live mode on real tracks (the weak spot)
+### 1. Live mode on real tracks: DONE
+The causal `LiveSections` bar machine (`live_sections.py`) now decides the live sections, and `simulate_live_bars` replays pastes through it. All 6 heard drops on the 3 real tracks are called within a bar. Copy analysis dumps `live_*` lines. Known miss: Not Even Love's 3rd drop (3:14). Builds come late in live (no lookahead). Old notes below for context.
+
+#### Original notes
 Live is what Edward would actually use mid-set without pre-analyzing, and it's way off on real songs:
 - **Chicken Soup live:** groove from 0:00, first drop at 1:18 (real: 0:43).
 - **Love Sosa live:** 19 sections with "breakdowns" every few seconds (`groove@0:00 breakdown@0:11 build@0:13 drop@0:27 breakdown@0:41 drop@1:01 breakdown@1:02 groove@1:03 ...`).
@@ -61,7 +64,10 @@ Live is what Edward would actually use mid-set without pre-analyzing, and it's w
   b. Extend **Copy analysis** to also dump what the live analyzer saw per bar (its sub level, full/empty flag, section, lock), so Edward's next pastes show where live goes wrong.
 - Likely fixes: hysteresis (a section must hold ≥ 1-2 bars before it can change again; kills the breakdown/groove flicker), and reuse the offline lessons causally (a drop needs the sub to come back after a real sub cut; a 1-2 bar dip mid-drop isn't a breakdown; a busy hook at drop loudness isn't a drop).
 
-### 2. Lights: make the "2nd build" step up
+### 2. Lights: make the "2nd build" step up: DONE
+`Section.stage2_bar` (offline; sub cut 2+ bars, OR a sub dip then comeback with kick ≥ 1.2 and energy up — Chicken Soup's 2nd stage is the comeback kind) → `MusicState.build_stage` (1/2) and `build_stage2_ahead`. Live sets stage 2 causally in `LiveSections`. `Show._build2`: near-white, fast chase, tight mover fan, strobes only when enabled. Stage 1 is capped at 0.74 only when a stage 2 is known to come (offline), so single-stage builds keep their full ramp. The chase flash rate ALWAYS obeys `max_strobe_hz` (2 Hz with strobes off); this is a safety rule, don't relax it. Detected: Chicken Soup 0:35.9 / 1:40.3, Love Sosa 0:54.5 / 2:37.3, Not Even Love none. Thresholds come from 3 tracks only.
+
+#### Original notes
 Edward hears trap builds in two stages: a build, then a 2nd more intense build when the sub cuts out (Chicken Soup 0:36, Love Sosa 0:55 and 2:37). Sections treat it as one build, so the lights just ramp smoothly.
 - Code: `Show._build` in `jaylights/show.py` (~line 165; it uses `section_progress` for the chase speed: div 1/2/4/8, and the colour draining to white), mirrored in `web/engine.js`.
 - Idea: when `st.low` drops to near zero during a BUILD (the sub cut), jump a level: subdivisions straight to 8ths/16ths, colour to near-white, movers to a tight fan, strobes (if enabled) start ticking. Optionally mark it in the analysis (a build "stage 2" start bar) so pre-analyzed mode can hit it exactly on the bar.
