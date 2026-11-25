@@ -276,7 +276,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.6
+   "secs": 12.0
   },
   {
    "name": "house_nokick_build",
@@ -492,7 +492,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.3
+   "secs": 11.6
   },
   {
    "name": "house_pickup_gap4",
@@ -717,7 +717,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.6
+   "secs": 11.4
   },
   {
    "name": "house_soft_kickbreak",
@@ -975,7 +975,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.9
+   "secs": 11.6
   },
   {
    "name": "prog_modest_drop",
@@ -1200,7 +1200,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.5
+   "secs": 10.0
   },
   {
    "name": "prog_longintro",
@@ -1445,7 +1445,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 13.0
+   "secs": 12.0
   },
   {
    "name": "melodic_soft",
@@ -1661,7 +1661,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.7
+   "secs": 12.0
   },
   {
    "name": "melodic_pickup8",
@@ -1881,7 +1881,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 12.2
+   "secs": 11.4
   },
   {
    "name": "techno_driving",
@@ -2116,7 +2116,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.1
+   "secs": 9.8
   },
   {
    "name": "techno_135_nobuild_gap",
@@ -2381,7 +2381,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 11.5
+   "secs": 11.0
   },
   {
    "name": "dubstep_halftime",
@@ -2606,7 +2606,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 6.1
+   "secs": 5.8
   },
   {
    "name": "dubstep_masking_sub",
@@ -2955,7 +2955,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 8.5
+   "secs": 8.4
   },
   {
    "name": "dubstep_riddim_150",
@@ -3634,7 +3634,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 7.3
+   "secs": 7.7
   },
   {
    "name": "trap_130_swing",
@@ -3855,7 +3855,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 6.6
+   "secs": 6.7
   },
   {
    "name": "dnb_174_classic",
@@ -4086,7 +4086,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.4
+   "secs": 10.9
   },
   {
    "name": "dnb_172_kickbuild",
@@ -4296,7 +4296,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 9.3
+   "secs": 9.7
   },
   {
    "name": "dnb_175_pickup",
@@ -4536,7 +4536,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.0
+   "secs": 10.5
   },
   {
    "name": "house_heavy_limit",
@@ -4776,7 +4776,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.5
+   "secs": 10.7
   },
   {
    "name": "prog_nogroove_hp",
@@ -4987,7 +4987,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 11.5
+   "secs": 11.9
   },
   {
    "name": "techno_pickup_silence",
@@ -5238,7 +5238,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 11.0
+   "secs": 11.6
   },
   {
    "name": "melodic_130_gap1",
@@ -5496,7 +5496,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 10.8
+   "secs": 11.1
   },
   {
    "name": "house_120_swing",
@@ -5725,7 +5725,7 @@
      "js_vs_py": []
     }
    },
-   "secs": 11.7
+   "secs": 11.9
   }
  ]
 }

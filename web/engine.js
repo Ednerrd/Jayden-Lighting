@@ -357,6 +357,12 @@
       }
       if (blen > 0) blen = clamp(Math.ceil(blen / PHRASE) * PHRASE, PHRASE, 32);
       let start = Math.max(lo, b - blen);
+      // drops come in whole 8-bar phrases: a build that would leave the drop before it on a
+      // half phrase (e.g. 12 bars) really started 4 bars earlier, kick still going
+      if (out.length && last().kind === DROP && last().end >= start) {
+        const dlen = start - last().start;
+        if (dlen >= 12 && dlen % 8 === 4) { start -= 4; last().end = start; }
+      }
       while (out.length && last().start >= start && last().kind !== DROP) out.pop();
       if (out.length && last().end > start && last().kind !== DROP) last().end = start;
       else if (out.length && last().end > start) start = last().end;

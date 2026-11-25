@@ -230,6 +230,14 @@ def label_sections(m: dict[str, np.ndarray]) -> list[Section]:
             # build really started 3 bars earlier, with the kick still going.
             blen = int(np.clip(np.ceil(blen / PHRASE) * PHRASE, PHRASE, 32))
         start = max(lo, b - blen)
+        # drops come in whole 8-bar phrases. If this build would leave the drop before it
+        # on a half phrase (say 12 bars), the build really started 4 bars earlier, with
+        # the kick still going (it sounds like the drop, so only the phrase gives it away)
+        if out and out[-1].kind == DROP and out[-1].end_bar >= start:
+            dlen = start - out[-1].start_bar
+            if dlen >= 12 and dlen % 8 == 4:
+                start -= 4
+                out[-1].end_bar = start
         # trim whatever we're eating into
         while out and out[-1].start_bar >= start and out[-1].kind != DROP:
             out.pop()
